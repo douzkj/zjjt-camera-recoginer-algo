@@ -16,6 +16,7 @@ ALGO_WEIGHT_PATH = os.getenv("ALGO_LABEL_WEIGHT_PATH", "weights")
 # 将 algo 目录添加到系统路径中
 sys.path.append(ALGO_DIR)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import logging
 
 
 
@@ -30,18 +31,37 @@ def enhance_image(relative_image_path):
 
     :param relative_image_path: 相对路径，相对于目录 algo/dataset_image_classification/train
     """
-    from algo_001_build_dataset_for_supervised_image_classification import data_augmentation
-    data_augmentation([relative_image_path])
+    # 保存当前工作目录
+    original_cwd = os.getcwd()
+    logging.info("测试")
+    try:
+        # 切换到 algo 目录
+        os.chdir(ALGO_DIR)
+        from algo_001_build_dataset_for_supervised_image_classification import data_augmentation
+        data_augmentation([relative_image_path])
+    finally:
+        # 切换回原始目录
+        os.chdir(original_cwd)
 
 
 # 识别算法（带打标）：输入1张图片（base64）
 def recognize_image_with_label(image_path, output_path, num_class=1):
-    from algo_007_automatically_build_dataset import generate_json_annotation_for_raw_frame
-    config = 'COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml'
-    weight_path = ALGO_WEIGHT_PATH
-    os.makedirs(output_path, exist_ok=True)
-    generate_json_annotation_for_raw_frame(image_path, config, weight_path, output_path, num_class)
-
+    # 保存当前工作目录
+    original_cwd = os.getcwd()
+    try:
+        # 切换到 algo 目录
+        os.chdir(ALGO_DIR)
+        from algo_007_automatically_build_dataset import generate_json_annotation_for_raw_frame
+        config = 'COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml'
+        weight_path = ALGO_WEIGHT_PATH
+        os.makedirs(output_path, exist_ok=True)
+        generate_json_annotation_for_raw_frame(image_path, config, weight_path, output_path, num_class)
+    except Exception as e:
+        print(f"Error occurred while calling generate_json_annotation_for_raw_frame: {e}")
+        raise e
+    finally:
+        # 切换回原始目录
+        os.chdir(original_cwd)
 
 # 识别算法（不打标）：输入1张图片（base64）
 def recognize_image_without_label(image_base64) -> str:

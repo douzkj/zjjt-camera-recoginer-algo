@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import os
 
@@ -8,6 +9,7 @@ from dotenv import load_dotenv
 from capture import CameraRtspCapture, FrameStorageConfig, FrameReadConfig
 from entity import CameraRecognizerTask, Camera, CameraRtsp
 from recognizer import RecognizeTask
+from setup import setup_logging, TaskLoggingFilter
 
 load_dotenv()  # 加载环境变量
 
@@ -20,6 +22,10 @@ QUEUE_RECOGNIZER_TASK = os.getenv('QUEUE_RECOGNIZER_TASK', 'zjjt:camera_recogniz
 
 STORAGE_FRAME_IMAGE_FOLDER = os.getenv('STORAGE_FRAME_IMAGE_FOLDER', './storages/images')
 
+FRAME_READ_INTERVAL_SECONDS = int(os.getenv("FRAME_READ_INTERVAL_SECONDS", 10))
+FRAME_READ_WINDOW = int(os.getenv("FRAME_READ_WINDOW", 3))
+
+logger = setup_logging("subscriber")
 
 class Subscriber(object):
     def __init__(self, host, port, user, password, vhost):
@@ -31,10 +37,20 @@ class Subscriber(object):
         self.password = password
         self.vhost = vhost
 
-
     def add_queue(self, queue_name, handler_fn):
         self.queue[queue_name] = handler_fn
-    
+
+    async def consume_queue(self, queue_name, handler_fn, channel):
+        queue = await channel.declare_queue(name=queue_name, durable=True)
+        async with queue.iterator() as queue_iter:
+            async for message in queue_iter:
+                try:
+                    await handler_fn(message.body)
+                    await message.ack()
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}")
+                    await message.nack()
+
     async def run(self):
         self.connection = await aio_pika.connect_robust(
             host=self.host,
@@ -45,45 +61,35 @@ class Subscriber(object):
         )
         async with self.connection:
             channel = await self.connection.channel()
+            await channel.set_qos(prefetch_count=20)
+            tasks = []
             for queue_name, handler_fn in self.queue.items():
-                queue = await channel.declare_queue(name=queue_name, durable=True)
-                # 设置一个异步的回调函数来处理消息
-                async with queue.iterator() as queue_iter:
-                    async for message in queue_iter:
-                        # 处理消息
-                        print(f"Received: {message.body}")
-                        try:
-                            await handler_fn(message.body)
-                            await message.ack()
-                            # 确认消息已被处理
-                        except Exception as e:
-                            print(f"Error processing message: {e}")
-                            await message.nack()  # 处理消息失败，重新入队列
+                task = asyncio.create_task(self.consume_queue(queue_name, handler_fn, channel))
+                tasks.append(task)
+            await asyncio.gather(*tasks)
 
 
 async def recognizer_task_handler(message):
     # 处理消息的逻辑
-    print(f"处理识别任务: {message}")
+    logger.debug(f"处理识别任务: {message}")
     # 转化为json对象
     task_obj = json.loads(message)
     task = CameraRecognizerTask(**task_obj)
     camera: Camera = task.camera
     rtsp: CameraRtsp = task.rtsp
+    logger.addFilter(TaskLoggingFilter(task))
 
     # 判定当前地址是否有效
     if rtsp.is_expired():
-        print(f"RTSP地址已过期: {rtsp.url}")
+        logger.warn(f"[{task.taskId}][{camera.indexCode} - {camera.name}] RTSP地址已过期: {rtsp.url}")
         return
 
     storage_config = FrameStorageConfig(store_folder=os.path.join(STORAGE_FRAME_IMAGE_FOLDER, camera.indexCode))
-    frame_read_config = FrameReadConfig(frame_interval_seconds=10, frame_window=3)
+    frame_read_config = FrameReadConfig(frame_interval_seconds=FRAME_READ_INTERVAL_SECONDS, frame_window=FRAME_READ_WINDOW)
     capture = CameraRtspCapture(rtsp.url, frame_storage_config=storage_config, frame_read_config=frame_read_config)
     task = RecognizeTask(cap=capture, camera_task=task)
     # 处理识别
     await task.do_recognizing()
-        
-
-
 
 
 # 使用示例

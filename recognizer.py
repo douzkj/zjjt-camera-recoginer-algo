@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -7,6 +8,7 @@ from dotenv import load_dotenv
 from algorithm import enhance_image, recognize_image_with_label
 from capture import CameraRtspCapture
 from entity import CameraRecognizerTask, Camera, CameraRtsp
+from setup import setup_logging, TaskLoggingFilter
 from utils import copy_and_rename_folder
 
 load_dotenv()  # 加载环境变量
@@ -18,24 +20,11 @@ ALGO_IMAGE_ENHANCE_ROOT = os.getenv("ALGO_IMAGE_ENHANCE_ROOT", './algo/dataset_i
 # 将 algo 目录添加到系统路径中
 sys.path.append(ALGO_DIR)
 
-
-def rtsp_to_image64(rtsp_url):
-    print("rtsp转image64, rtsp={}".format(rtsp_url))
-    return None
-
-
-
-def read_exist_img_64():
-    # 读取同类别下的文件夹内的图片
-    print("读取同类别下的文件夹内的图片")
-    return []
-
+logger = setup_logging("recognizer")
 
 
 class RecognizeTask(object):
-
     task: CameraRecognizerTask = None
-
     camera: Camera = None
     rtsp: CameraRtsp = None
 
@@ -47,15 +36,19 @@ class RecognizeTask(object):
         self.camera = camera_task.camera
         self.rtsp = camera_task.rtsp
         self.cap = cap
+        logger.addFilter(TaskLoggingFilter(camera_task))
 
     async def do_recognizing(self):
-        image_dir = self.cap.frame_storage_config.get_storage_folder(self.task.taskId)
-        os.makedirs(image_dir, exist_ok=True)
+        mk_folder = False
         read_success = False
+        image_dir = self.cap.frame_storage_config.get_storage_folder(self.task.taskId)
         async for frame in self.cap.read_frame_iter():
-            image_path = os.path.join(image_dir, f"{frame.get_frame_id()}.jpg")
+            if mk_folder is False:
+                mk_folder = True
+                os.makedirs(image_dir, exist_ok=True)
+            image_path = os.path.join(image_dir, f"{self.camera.indexCode}-{self.task.taskId}-{frame.get_frame_id()}.jpg")
             cv2.imwrite(image_path, frame.frame)
-            print("save img success: ", image_path)
+            logger.info(f"视频帧  Image saved to {image_path}")
             read_success = True
         if read_success:
             await self.do_recognizer_algo(image_dir)
@@ -76,16 +69,16 @@ class RecognizeTask(object):
         #                                                                            img_64, exist_img_64))
         #         return
         # 2. 增强图像
-        print("# 2. 增强图像")
+        logger.info("# 2. 增强图像")
         relative_task_image_path = os.path.join(self.camera.indexCode, self.task.taskId)
         enhance_image_dir = os.path.join(ALGO_IMAGE_ENHANCE_ROOT, relative_task_image_path)
         copy_and_rename_folder(image_dir, enhance_image_dir)
         enhance_image(relative_task_image_path)
         # 3. 识别图像（带label）
-        print("# 3. 识别图像（带label）")
-        alog_label_image_tmp_path = os.path.join(STORAGE_LABEL_IMAGE_FOLDER, relative_task_image_path)
-        dst_folder = copy_and_rename_folder(image_dir, alog_label_image_tmp_path, "tmp")
-        recognize_image_with_label(dst_folder, output_path=dst_folder)
+        logger.info("# 3. 识别图像（带label）")
+        tmp_dir = os.path.join(image_dir, "tmp")
+        copy_and_rename_folder(image_dir, tmp_dir)
+        alog_label_image_tmp_path = os.path.join(image_dir, "label_images")
+        recognize_image_with_label(tmp_dir, output_path=alog_label_image_tmp_path)
         # print("识别结果: label_img64={}, labels={}".format(label_img64, labels))
         # 将识别后的结果推送至消息队列
-
