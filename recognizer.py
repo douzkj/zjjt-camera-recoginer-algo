@@ -1,5 +1,7 @@
+import asyncio
 import os
 import sys
+import threading
 
 import cv2
 from dotenv import load_dotenv
@@ -27,6 +29,7 @@ class RecognizeTask(object):
     camera: Camera = None
     rtsp: CameraRtsp = None
 
+
     # 相似度阈值
     similarity_threshold: float = 0.9
 
@@ -37,7 +40,8 @@ class RecognizeTask(object):
         self.cap = cap
         logger.addFilter(TaskLoggingFilter(camera_task))
 
-    async def do_recognizing(self):
+    async def _async_recognizer(self):
+        # self.cap.start()
         mk_folder = False
         read_success = False
         # image_dir = self.cap.frame_storage_config.get_storage_folder(self.task.taskId)
@@ -54,6 +58,37 @@ class RecognizeTask(object):
             read_success = True
         if read_success:
             await self.do_recognizer_algo(image_dir)
+
+    def do_recognizer_async(self):
+        # 创建一个新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # 运行异步方法
+            loop.run_until_complete(self._async_recognizer())
+        finally:
+            # 关闭事件循环
+            loop.close()
+
+    async def do_recognizing(self):
+        thread = threading.Thread(target=self.do_recognizer_async, daemon=True)
+        thread.start()
+        # mk_folder = False
+        # read_success = False
+        # # image_dir = self.cap.frame_storage_config.get_storage_folder(self.task.taskId)
+        # image_dir = self.cap.frame_storage_config.get_storage_folder()
+        # async for frame in self.cap.read_frame_iter():
+        #     if mk_folder is False:
+        #         mk_folder = True
+        #         os.makedirs(image_dir, exist_ok=True)
+        #
+        #     image_path = os.path.join(image_dir,
+        #                               f"{self.camera.indexCode}-{frame.get_frame_date_format()}.{self.cap.frame_storage_config.image_suffix}")
+        #     cv2.imwrite(image_path, frame.frame)
+        #     logger.info(f"视频帧  Image saved to {image_path}")
+        #     read_success = True
+        # if read_success:
+        #     await self.do_recognizer_algo(image_dir)
 
     async def do_recognizer_algo(self, image_dir):
         # img_64 = self.cap.frame_to_image64(frame)
