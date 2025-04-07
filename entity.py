@@ -19,11 +19,62 @@ class CameraRtsp(BaseModel):
         return self.rtspExpiredTimeMs is not None and (self.rtspExpiredTimeMs / 1000) < int(time.time())
 
 
+class SignalFrameStorageConfig(BaseModel):
+    frameStoragePath: str = Field(..., description="图片帧存储文件夹")
+    frameImageSuffix: str = Field(default='jpg', description="图片帧存储后缀")
+
+
+class SignalFrameReadConfig(BaseModel):
+    frameIntervalSeconds: int = Field(description="帧读取间隔", default=5)
+    frameRetryTimes: int = Field(description="读取重试次数", default=3)
+    frameRetryInterval: int = Field(description="帧重试间隔", default=1)
+    frameWindow: int = Field(description="读取窗口大小", default=10)
+
+
+class SignalFrameConfig(BaseModel):
+    storage: SignalFrameStorageConfig = Field(..., description="")
+    read: SignalFrameReadConfig = Field(..., description="")
+
+
+class SignalConfig(BaseModel):
+    frame: SignalFrameConfig = Field(..., description="帧配置")
+
+
+class Signal(BaseModel):
+    signalName: str = Field(..., description="通路名称")
+    signalId: str = Field(..., description="通路ID")
+    config: SignalConfig = Field(..., description="配置信息")
+
+
 class CameraRecognizerTask(BaseModel):
     taskId: str = Field(..., description="任务运行ID")
     camera: Camera = None
     rtsp: CameraRtsp = None
+    signal: Signal = None
     createdTimeMs: int = Field(..., description="任务创建时间戳")
+
+    def get_frame_config(self):
+        if self.signal is None or self.signal.config is None:
+            return None
+        return self.signal.config.frame
+
+    def get_frame_storage_path(self):
+        if self.signal is None or self.signal.config is None or self.signal.config.frame is None:
+            return None
+        return self.signal.config.frame.storage.frameStoragePath
+
+    def get_frame_image_suffix(self):
+        if self.signal is None or self.signal.config is None or self.signal.config.frame is None:
+            return "jpg"
+        return self.signal.config.frame.storage.frameImageSuffix
+
+
+class Event(BaseModel):
+    eventType: str = Field(..., description="事件类型")
+    body: str = Field(..., description="事件内容")
+    eventTimeMs: int = Field(..., description="事件时间戳")
+    eventDescript: str = Field(..., description="事件描述")
+
 
 
 if __name__ == '__main__':

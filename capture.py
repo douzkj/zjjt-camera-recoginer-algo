@@ -1,11 +1,9 @@
 import asyncio
-import logging
 import os
 import time
 
 import cv2
 from typing_extensions import AsyncIterable
-import os
 
 from setup import setup_logging
 
@@ -33,13 +31,18 @@ class FrameReadConfig(object):
         self.frame_window = frame_window
         self.frame_retry_interval = frame_retry_interval
 
+    def can_continue_read(self, save_frame_count):
+        if self.frame_window <= 0:
+            return True
+        return save_frame_count < self.frame_window
+
 
 class FrameStorageConfig(object):
     # 存储文件夹
     store_folder: str = './data'
-    image_suffix: str = '.jpg'
+    image_suffix: str = 'jpg'
 
-    def __init__(self, store_folder='./data/', image_suffix='.jpg'):
+    def __init__(self, store_folder='./data/', image_suffix='jpg'):
         self.store_folder = store_folder
         self.image_suffix = image_suffix
 
@@ -69,6 +72,13 @@ class CaptureFrame(object):
 
     def get_frame_id(self) -> str:
         return str(self.id)
+
+    def get_frame_date_format(self, format='%Y%m%d%H%M%S'):
+        import datetime, pytz
+        # 将时间戳转换为datetime对象
+        dt_object = datetime.datetime.fromtimestamp(self.timestamp)
+        dt_object = dt_object.astimezone(pytz.timezone('Asia/Shanghai'))
+        return dt_object.strftime(format)
 
 
 class RtspReadConfig:
@@ -128,7 +138,7 @@ class CameraRtspCapture:
         frame_count = 0
         self.is_capturing = True
         try:
-            while self.is_capturing and saved_frame_count < self.frame_read_config.frame_window:
+            while self.is_capturing and self.frame_read_config.can_continue_read(saved_frame_count):
                 can_save = frame_count % (self.fps * self.frame_read_config.frame_interval_seconds) == 0
                 frame = await self.read_frame()
                 if frame is None:
@@ -136,7 +146,7 @@ class CameraRtspCapture:
                     break
                 else:
                     if can_save:
-                        print(f"read frame success. frame count:{frame_count}, saved frame count:{saved_frame_count}")
+                        print(f"read frame [{self.rtsp_url}] success. frame count:{frame_count}, saved frame count:{saved_frame_count}")
                         capture_frame = CaptureFrame(id=saved_frame_count, frame=frame)
                         yield capture_frame
                         saved_frame_count += 1

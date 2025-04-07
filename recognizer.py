@@ -1,11 +1,10 @@
-import logging
 import os
 import sys
 
 import cv2
 from dotenv import load_dotenv
 
-from algorithm import enhance_image, recognize_image_with_label
+from algorithm import recognize_image_with_label
 from capture import CameraRtspCapture
 from entity import CameraRecognizerTask, Camera, CameraRtsp
 from setup import setup_logging, TaskLoggingFilter
@@ -14,7 +13,7 @@ from utils import copy_and_rename_folder
 load_dotenv()  # 加载环境变量
 
 ALGO_DIR = os.getenv("ALGO_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), 'algo'))
-STORAGE_LABEL_IMAGE_FOLDER = os.getenv("STORAGE_LABEL_IMAGE_FOLDER", './storages/label_images')
+STORAGE_LABEL_IMAGE_FOLDER = os.getenv("STORAGE_LABEL_IMAGE_FOLDER", 'label_images')
 ALGO_IMAGE_ENHANCE_ROOT = os.getenv("ALGO_IMAGE_ENHANCE_ROOT", './algo/dataset_image_classification/train')
 
 # 将 algo 目录添加到系统路径中
@@ -41,12 +40,15 @@ class RecognizeTask(object):
     async def do_recognizing(self):
         mk_folder = False
         read_success = False
-        image_dir = self.cap.frame_storage_config.get_storage_folder(self.task.taskId)
+        # image_dir = self.cap.frame_storage_config.get_storage_folder(self.task.taskId)
+        image_dir = self.cap.frame_storage_config.get_storage_folder()
         async for frame in self.cap.read_frame_iter():
             if mk_folder is False:
                 mk_folder = True
                 os.makedirs(image_dir, exist_ok=True)
-            image_path = os.path.join(image_dir, f"{self.camera.indexCode}-{self.task.taskId}-{frame.get_frame_id()}.jpg")
+
+            image_path = os.path.join(image_dir,
+                                      f"{self.camera.indexCode}-{frame.get_frame_date_format()}.{self.cap.frame_storage_config.image_suffix}")
             cv2.imwrite(image_path, frame.frame)
             logger.info(f"视频帧  Image saved to {image_path}")
             read_success = True
@@ -69,16 +71,17 @@ class RecognizeTask(object):
         #                                                                            img_64, exist_img_64))
         #         return
         # 2. 增强图像
-        logger.info("# 2. 增强图像")
-        relative_task_image_path = os.path.join(self.camera.indexCode, self.task.taskId)
-        enhance_image_dir = os.path.join(ALGO_IMAGE_ENHANCE_ROOT, relative_task_image_path)
-        copy_and_rename_folder(image_dir, enhance_image_dir)
-        enhance_image(relative_task_image_path)
+        # logger.info("# 2. 增强图像")
+        # relative_task_image_path = os.path.join(self.camera.indexCode, self.task.taskId)
+        # enhance_image_dir = os.path.join(ALGO_IMAGE_ENHANCE_ROOT, relative_task_image_path)
+        # copy_and_rename_folder(image_dir, enhance_image_dir)
+        # enhance_image(relative_task_image_path)
         # 3. 识别图像（带label）
+        ## 当前算法特殊性，导致当前数据无法共存，所以需要将原数据拷贝到临时文件夹中
         logger.info("# 3. 识别图像（带label）")
-        tmp_dir = os.path.join(image_dir, "tmp")
+        tmp_dir = os.path.join(image_dir, "label_images")
         copy_and_rename_folder(image_dir, tmp_dir)
-        alog_label_image_tmp_path = os.path.join(image_dir, "label_images")
+        alog_label_image_tmp_path = os.path.join(image_dir, STORAGE_LABEL_IMAGE_FOLDER)
         recognize_image_with_label(tmp_dir, output_path=alog_label_image_tmp_path)
         # print("识别结果: label_img64={}, labels={}".format(label_img64, labels))
         # 将识别后的结果推送至消息队列
