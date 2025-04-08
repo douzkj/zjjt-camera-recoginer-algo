@@ -96,9 +96,7 @@ class RecognizeTask(object):
         self.rtsp = task.rtsp
         self.frame_storage_config = task.frame_storage_config
         self.frame_read_config = task.frame_read_config
-        or_cap = self.cap
-        self.cap = task.cap
-        del or_cap
+        self.cap.update(rtsp_url=self.rtsp.url, rtsp_read_config=task.cap.rtsp_read_config, frame_read_config=self.frame_read_config)
 
 
 class TaskManager:

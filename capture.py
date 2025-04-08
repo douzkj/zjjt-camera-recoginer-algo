@@ -116,7 +116,7 @@ class CameraRtspCapture:
         self.rtsp_url = rtsp_url
         self.frame_read_config = frame_read_config if frame_read_config is not None else DEFAULT_FRAME_READ_CONFIG
         self.rtsp_read_config = rtsp_read_config if rtsp_read_config is not None else RtspReadConfig()
-        self._create_cap()
+        # self._create_cap()
 
     def _create_cap(self):
         cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
@@ -169,7 +169,7 @@ class CameraRtspCapture:
             await asyncio.sleep(max(self.frame_read_config.frame_interval_seconds - interval_seconds, 1))
 
 
-    async def read_single_frame(self) -> CaptureFrame|None:
+    async def read_single_frame(self):
         frame_count = 0
         while self.can_read():
             # 计算读取间隔
