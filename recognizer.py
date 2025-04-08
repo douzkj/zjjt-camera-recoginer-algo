@@ -2,15 +2,15 @@ import asyncio
 import os
 import sys
 import threading
+from typing import List
 
 import cv2
 from dotenv import load_dotenv
 
 from algorithm import recognize_image_with_label
-from capture import CameraRtspCapture
+from capture import CameraRtspCapture, FrameStorageConfig, FrameReadConfig
 from entity import CameraRecognizerTask, Camera, CameraRtsp
 from setup import setup_logging, TaskLoggingFilter
-from utils import copy_and_rename_folder
 
 load_dotenv()  # 加载环境变量
 
@@ -28,69 +28,40 @@ class RecognizeTask(object):
     task: CameraRecognizerTask = None
     camera: Camera = None
     rtsp: CameraRtsp = None
-
+    frame_storage_config: FrameStorageConfig = None
+    frame_read_config: FrameReadConfig = None
 
     # 相似度阈值
     similarity_threshold: float = 0.9
+    running = False
 
-    def __init__(self, cap: CameraRtspCapture, camera_task: CameraRecognizerTask):
+    def __init__(self, camera_task: CameraRecognizerTask, frame_storage_config: FrameStorageConfig, frame_read_config: FrameReadConfig):
         self.task = camera_task
         self.camera = camera_task.camera
         self.rtsp = camera_task.rtsp
-        self.cap = cap
+        self.frame_storage_config = frame_storage_config
+        self.frame_read_config = frame_read_config
+        self.cap = CameraRtspCapture(self.rtsp.url, frame_read_config=frame_read_config)
         logger.addFilter(TaskLoggingFilter(camera_task))
 
-    async def _async_recognizer(self):
-        # self.cap.start()
-        mk_folder = False
-        read_success = False
-        # image_dir = self.cap.frame_storage_config.get_storage_folder(self.task.taskId)
-        image_dir = self.cap.frame_storage_config.get_storage_folder()
-        async for frame in self.cap.read_frame_iter():
-            if mk_folder is False:
-                mk_folder = True
-                os.makedirs(image_dir, exist_ok=True)
-
-            image_path = os.path.join(image_dir,
-                                      f"{self.camera.indexCode}-{frame.get_frame_date_format()}.{self.cap.frame_storage_config.image_suffix}")
-            cv2.imwrite(image_path, frame.frame)
-            logger.info(f"视频帧  Image saved to {image_path}")
-            read_success = True
-        if read_success:
-            await self.do_recognizer_algo(image_dir)
-
-    def do_recognizer_async(self):
-        # 创建一个新的事件循环
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    async def read_and_recognize(self):
         try:
-            # 运行异步方法
-            loop.run_until_complete(self._async_recognizer())
+            self.cap.open()
+            image_dir = self.frame_storage_config.get_storage_folder()
+            os.makedirs(image_dir, exist_ok=True)
+            frame = await self.cap.read_single_frame()
+            if frame is None:
+                logger.warning(f"[{self.camera.indexCode} - {self.camera.name}][{self.rtsp.url}]视频帧读取失败")
+                return
+            image_path = os.path.join(image_dir, f"{self.camera.indexCode}-{frame.get_frame_date_format()}.{self.frame_storage_config.image_suffix}")
+            cv2.imwrite(image_path, frame.frame)
+            logger.info(
+                f"[{self.camera.indexCode} - {self.camera.name}][{self.rtsp.url}]视频帧 Image saved to {image_path}")
+            await self.do_recognizer_algo(image_path)
         finally:
-            # 关闭事件循环
-            loop.close()
+            self.cap.stop()
 
-    async def do_recognizing(self):
-        thread = threading.Thread(target=self.do_recognizer_async, daemon=True)
-        thread.start()
-        # mk_folder = False
-        # read_success = False
-        # # image_dir = self.cap.frame_storage_config.get_storage_folder(self.task.taskId)
-        # image_dir = self.cap.frame_storage_config.get_storage_folder()
-        # async for frame in self.cap.read_frame_iter():
-        #     if mk_folder is False:
-        #         mk_folder = True
-        #         os.makedirs(image_dir, exist_ok=True)
-        #
-        #     image_path = os.path.join(image_dir,
-        #                               f"{self.camera.indexCode}-{frame.get_frame_date_format()}.{self.cap.frame_storage_config.image_suffix}")
-        #     cv2.imwrite(image_path, frame.frame)
-        #     logger.info(f"视频帧  Image saved to {image_path}")
-        #     read_success = True
-        # if read_success:
-        #     await self.do_recognizer_algo(image_dir)
-
-    async def do_recognizer_algo(self, image_dir):
+    async def do_recognizer_algo(self, image_path):
         # img_64 = self.cap.frame_to_image64(frame)
         # if img_64 is None:
         #     print("frame转image64失败")
@@ -112,11 +83,72 @@ class RecognizeTask(object):
         # copy_and_rename_folder(image_dir, enhance_image_dir)
         # enhance_image(relative_task_image_path)
         # 3. 识别图像（带label）
-        ## 当前算法特殊性，导致当前数据无法共存，所以需要将原数据拷贝到临时文件夹中
         logger.info("# 3. 识别图像（带label）")
-        tmp_dir = os.path.join(image_dir, "label_images")
-        copy_and_rename_folder(image_dir, tmp_dir)
-        alog_label_image_tmp_path = os.path.join(image_dir, STORAGE_LABEL_IMAGE_FOLDER)
-        recognize_image_with_label(tmp_dir, output_path=alog_label_image_tmp_path)
+        label_images = os.path.join(self.frame_storage_config.get_storage_folder(), "label_images")
+        os.makedirs(label_images, exist_ok=True)
+        recognize_image_with_label(image_path, output_path=label_images)
         # print("识别结果: label_img64={}, labels={}".format(label_img64, labels))
         # 将识别后的结果推送至消息队列
+
+    def update(self, task):
+        self.task = task.task
+        self.camera = task.camera
+        self.rtsp = task.rtsp
+        self.frame_storage_config = task.frame_storage_config
+        self.frame_read_config = task.frame_read_config
+        or_cap = self.cap
+        self.cap = task.cap
+        del or_cap
+
+
+class TaskManager:
+    signal_tasks: dict = None
+    camera_task: dict = None
+    thread: threading.Thread = None
+
+    def __init__(self):
+        self.signal_tasks = {}
+        self.camera_task = {}
+        self.thread = threading.Thread(target=self.run_tasks, daemon=True)
+        self.thread.start()
+
+    def add_task(self, task: RecognizeTask):
+        signal_id = task.task.signal.signalId
+        camera_index_code = task.camera.indexCode
+        if signal_id not in self.signal_tasks:
+            self.signal_tasks[signal_id] = []
+        if camera_index_code not in self.camera_task:
+            self.signal_tasks[signal_id].append(task)
+            self.camera_task[camera_index_code] = task
+        else:
+            self.camera_task[camera_index_code].update(task)
+
+
+    async def run_pathway_tasks(self, task_list: List[RecognizeTask]):
+        # 顺序执行同一通路的任务
+        for task in task_list:
+            try:
+                await task.read_and_recognize()
+            except Exception as e:
+                logger.error(f"[{task.camera.indexCode} - {task.camera.name}][{task.rtsp.url}]read_and_recognize error. ", e)
+
+    def run_tasks(self):
+        # 创建一个新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            while True:
+                task_runners = []
+                for signal_id, tasks in self.signal_tasks.items():
+                    task_runners.append(self.run_pathway_tasks(tasks))
+                # 运行异步方法
+                loop.run_until_complete(asyncio.gather(*task_runners))
+        finally:
+            # 关闭事件循环
+            loop.close()
+
+
+task_manager = TaskManager()
+
+
+

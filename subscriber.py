@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from capture import CameraRtspCapture, FrameStorageConfig, FrameReadConfig
 from entity import CameraRecognizerTask, Camera, CameraRtsp
-from recognizer import RecognizeTask
+from recognizer import RecognizeTask, task_manager
 from setup import setup_logging, TaskLoggingFilter
 
 load_dotenv()  # 加载环境变量
@@ -139,30 +139,6 @@ class Subscriber(object):
             consumers = [self.start_consume(queue_name, handler_fn) for _ in range(consumer_count)]
             await asyncio.gather(*consumers)
 
-        # while True:
-        #     try:
-        #         self.connection = await aio_pika.connect_robust(
-        #             host=self.host,
-        #             port=self.port,
-        #             login=self.user,
-        #             password=self.password,
-        #             virtualhost=self.vhost,
-        #             reconnect_interval=5,  # 重试间隔5秒
-        #             reconnect_timeout=300,  # 总重试时间300秒
-        #             heartbeat_interval=60,
-        #         )
-        #         async with self.connection:
-        #             tasks = []
-        #             for queue_name, handler_fn in self.queue.items():
-        #                 task = asyncio.create_task(self.consume_queue(queue_name, handler_fn))
-        #                 tasks.append(task)
-        #             await asyncio.gather(*tasks)
-        #     except aio_pika.exceptions.AMQPConnectionError as e:
-        #         logger.error("Connection error. Reconnecting...")
-        #         await asyncio.sleep(5)  # 等待5秒后重试
-        #     except Exception as e:
-        #         logger.error(f"Error in run: {e}")
-
 
 async def recognizer_task_handler(message):
     # 处理消息的逻辑
@@ -180,7 +156,7 @@ async def recognizer_task_handler(message):
         return
     frame_config = task.get_frame_config()
     if frame_config is not None:
-        logger.warning(f"[{task.taskId}][{camera.indexCode} - {camera.name}] 未配置帧读取配置")
+        logger.warning(f"[{task.taskId}][{camera.indexCode} - {camera.name}] 帧读取配置: {frame_config.model_dump_json()}")
         storage_config = FrameStorageConfig(store_folder=frame_config.storage.frameStoragePath, image_suffix=frame_config.storage.frameImageSuffix)
         frame_read_config = FrameReadConfig(frame_interval_seconds=frame_config.read.frameIntervalSeconds,
                                             frame_retry_times=frame_config.read.frameRetryTimes,
@@ -191,10 +167,11 @@ async def recognizer_task_handler(message):
         storage_config = FrameStorageConfig(store_folder=os.path.join(STORAGE_FRAME_IMAGE_FOLDER, camera.indexCode))
         frame_read_config = FrameReadConfig(frame_interval_seconds=FRAME_READ_INTERVAL_SECONDS,
                                             frame_window=FRAME_READ_WINDOW)
-    capture = CameraRtspCapture(rtsp.url, frame_storage_config=storage_config, frame_read_config=frame_read_config)
-    task = RecognizeTask(cap=capture, camera_task=task)
-    # 处理识别
-    await task.do_recognizing()
+    # capture = CameraRtspCapture(rtsp.url, frame_storage_config=storage_config, frame_read_config=frame_read_config)
+    task = RecognizeTask(camera_task=task, frame_storage_config=storage_config, frame_read_config=frame_read_config)
+    task_manager.add_task(task)
+    # # 处理识别
+    # await task.do_recognizing()
 
 
 # 使用示例

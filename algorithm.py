@@ -51,7 +51,7 @@ def recognize_image_with_label(image_path, output_path, num_class=1):
     try:
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
-        from algo_007_automatically_build_dataset import generate_json_annotation_for_raw_frame
+        from algo_008_automatically_build_dataset import generate_json_annotation_for_raw_frame
         config = 'COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml'
         weight_path = ALGO_WEIGHT_PATH
         os.makedirs(output_path, exist_ok=True)

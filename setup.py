@@ -26,7 +26,7 @@ def setup_logging(logger_name=__name__,
                   level=LOG_LEVEL,
                   backup_count=7,
                   log_format=LOG_FORMAT,
-                  console_collector=False,
+                  console_collector=True,
                   console_level=logging.DEBUG
                   ):
     # 创建日志记录器
