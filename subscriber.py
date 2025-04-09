@@ -5,7 +5,7 @@ import os
 import aio_pika
 from dotenv import load_dotenv
 
-from capture import CameraRtspCapture, FrameStorageConfig, FrameReadConfig
+from capture import FrameStorageConfig, FrameReadConfig
 from entity import CameraRecognizerTask, Camera, CameraRtsp
 from recognizer import RecognizeTask, task_manager
 from setup import setup_logging, TaskLoggingFilter
@@ -37,13 +37,35 @@ class Subscriber(object):
         self.user = user
         self.password = password
         self.vhost = vhost
+        self.reconnecting = False  # 新增重连标志
+
+    async def connect(self):
+        while True:
+            try:
+                self.connection = await aio_pika.connect_robust(
+                    host=self.host,
+                    port=self.port,
+                    login=self.user,
+                    password=self.password,
+                    virtualhost=self.vhost,
+                    reconnect_interval=5,  # 重试间隔5秒
+                    reconnect_timeout=300,  # 总重试时间300秒
+                    heartbeat_interval=60,
+                )
+                self.reconnecting = False
+                logger.info(f"Connected to RabbitMQ. host={self.host}")
+                break
+            except Exception as e:
+                self.reconnecting = True
+                logger.error(f"Failed to connect to RabbitMQ: {e}. Retrying in 5 seconds...")
+                await asyncio.sleep(3)
 
     def add_queue(self, queue_name, handler_fn):
         self.queue[queue_name] = handler_fn
 
-    async def consume_queue(self, queue_name, handler_fn):
+    async def queue_consume_handler(self, queue_name, handler_fn):
         channel = await self.connection.channel()
-        await channel.set_qos(prefetch_count=1)
+        await channel.set_qos(prefetch_count=5)
         queue = await channel.declare_queue(name=queue_name, durable=True,
                                             arguments={
                                                 # 'x-dead-letter-exchange': 'dlx_exchange',  # 绑定死信交换机
@@ -84,57 +106,19 @@ class Subscriber(object):
 
 
     async def start_consume(self, queue_name, handler_fn):
-        connection = await aio_pika.connect_robust(
-            host=self.host,
-            port=self.port,
-            login=self.user,
-            password=self.password,
-            virtualhost=self.vhost,
-            reconnect_interval=5,  # 重试间隔5秒
-            reconnect_timeout=300,  # 总重试时间300秒
-            heartbeat_interval=60,
-        )
-        async with connection:
-            channel = await connection.channel()
-            await channel.set_qos(prefetch_count=1)
-            queue = await channel.declare_queue(name=queue_name, durable=True,
-                                                arguments={
-                                                    # 'x-dead-letter-exchange': 'dlx_exchange',  # 绑定死信交换机
-                                                    'x-max-retries': 3  # 自定义重试参数（需手动实现）
-                                                }
-                                                )
-            async with queue.iterator() as queue_iter:
-                async for message in queue_iter:
-                    try:
-                        asyncio.create_task(handler_fn(message.body))  # 创建异步任务处理消息
-                        # await handler_fn(message.body)
-                        await message.ack()
-                    except Exception as e:
-                        retries = message.headers.get('x-retry-count', 0)
-                        logger.error(f"Error processing message: {e}.  retrying {retries}....")
-                        if retries < 3:  # 最大重试次数设为3次
-                            new_headers = message.headers.copy()
-                            new_headers["x-retry-count"] = retries + 1  # 递增重试次数
-                            try:
-                                ret = await channel.default_exchange.publish(
-                                    aio_pika.Message(
-                                        body=message.body,
-                                        headers=new_headers,  # 传递重试次数
-                                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                                    ),
-                                    routing_key=queue.name,
-                                )
-                                logger.warning("Retrying message .ret={}".format(ret))
-                                await message.ack()  # 需要 `ack()` 否则 RabbitMQ 认为消息未处理
-                            except Exception as retry_error:
-                                logger.error(f"Error retrying message: {retry_error}")
-                                await message.nack()
-                            # # 拒绝消息并重新入队
-                            # await message.nack(requeue=False)
-                        else:
-                            # 超过最大重试次数, 过滤消息
-                            await message.ack()
+        while True:
+            if self.reconnecting:
+                await self.connect()
+            try:
+                await self.queue_consume_handler(queue_name, handler_fn)
+            except ConnectionError as e:
+                self.reconnecting = True
+                logger.error(f"Connection lost: {e}. Reconnecting...")
+                await asyncio.sleep(3)
+
+
     async def run(self, consumer_count=5):
+        await self.connect()
         for queue_name, handler_fn in self.queue.items():
             consumers = [self.start_consume(queue_name, handler_fn) for _ in range(consumer_count)]
             await asyncio.gather(*consumers)
