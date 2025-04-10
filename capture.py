@@ -162,18 +162,13 @@ class CameraRtspCapture:
     def log_read_time(self):
         self.last_frame_seconds = int(time.time())
 
-    async def _read_sleep(self):
-        # 计算读取间隔
-        interval_seconds = int(time.time()) - self.last_frame_seconds
-        if interval_seconds < self.frame_read_config.frame_interval_seconds:
-            await asyncio.sleep(max(self.frame_read_config.frame_interval_seconds - interval_seconds, 1))
-
-
     async def read_single_frame(self):
         frame_count = 0
         while self.can_read():
             # 计算读取间隔
-            await self._read_sleep()
+            interval_seconds = int(time.time()) - self.last_frame_seconds
+            if interval_seconds < self.frame_read_config.frame_interval_seconds:
+                await asyncio.sleep(max(self.frame_read_config.frame_interval_seconds - interval_seconds, 1))
             frame = await self.read_frame()
             self.log_read_time()
             if frame is None:

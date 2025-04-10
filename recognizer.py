@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import threading
+import time
 from typing import List
 
 import cv2
@@ -34,6 +35,9 @@ class RecognizeTask(object):
     # 相似度阈值
     similarity_threshold: float = 0.9
     running = False
+
+    def is_active(self):
+        return self.rtsp is not None and not self.rtsp.is_expired()
 
     def __init__(self, camera_task: CameraRecognizerTask, frame_storage_config: FrameStorageConfig, frame_read_config: FrameReadConfig):
         self.task = camera_task
@@ -122,6 +126,25 @@ class TaskManager:
             self.camera_task[camera_index_code].update(task)
 
 
+    def remove_task(self,signal_id, task: RecognizeTask):
+        if signal_id in self.signal_tasks:
+            try:
+                self.signal_tasks[signal_id].remove(task)
+                if task.camera.indexCode in self.camera_task:
+                    del self.camera_task[task.camera.indexCode]
+            except ValueError:
+                logger.warning(f"Task {task} not found in signal_tasks[{signal_id}]")
+
+    def get_signal_active_tasks(self, signal_id):
+        active_tasks = []
+        tasks = self.signal_tasks.get(signal_id, [])
+        for t in tasks:
+            if t.is_active():
+                active_tasks.append(t)
+            else:
+                self.remove_task(signal_id, t)
+        return active_tasks
+
     async def run_pathway_tasks(self, task_list: List[RecognizeTask]):
         # 顺序执行同一通路的任务
         for task in task_list:
@@ -129,6 +152,7 @@ class TaskManager:
                 await task.read_and_recognize()
             except Exception as e:
                 logger.error(f"[{task.camera.indexCode} - {task.camera.name}][{task.rtsp.url}]read_and_recognize error. ", e)
+        await asyncio.sleep(0.001)
 
     def run_tasks(self):
         # 创建一个新的事件循环
@@ -137,10 +161,16 @@ class TaskManager:
         try:
             while True:
                 task_runners = []
-                for signal_id, tasks in self.signal_tasks.items():
-                    task_runners.append(self.run_pathway_tasks(tasks))
-                # 运行异步方法
-                loop.run_until_complete(asyncio.gather(*task_runners))
+                for signal_id in self.signal_tasks.keys():
+                    tasks = self.get_signal_active_tasks(signal_id)
+                    if len(tasks) > 0:
+                        task_runners.append(self.run_pathway_tasks(tasks))
+                    else:
+                        logger.warning(f"当前通路[{signal_id}]无有效设备")
+                if len(task_runners) > 0:
+                    # 运行异步方法
+                    loop.run_until_complete(asyncio.gather(*task_runners))
+                time.sleep(0.001)
         finally:
             # 关闭事件循环
             loop.close()
