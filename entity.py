@@ -36,8 +36,15 @@ class SignalFrameConfig(BaseModel):
     read: SignalFrameReadConfig = Field(..., description="")
 
 
+class AlgoLabelConfig(BaseModel):
+    enabled: bool = Field(description="开启算法打标", default=False)
+
+class SignalAlgoConfig(BaseModel):
+    label: AlgoLabelConfig = Field(..., description="打标算法配置")
+
 class SignalConfig(BaseModel):
     frame: SignalFrameConfig = Field(..., description="帧配置")
+    algo: SignalAlgoConfig = Field(..., description="算法配置")
 
 
 class Signal(BaseModel):
@@ -57,6 +64,11 @@ class CameraRecognizerTask(BaseModel):
         if self.signal is None or self.signal.config is None:
             return None
         return self.signal.config.frame
+
+    def get_algo_config(self):
+        if self.signal is None or self.signal.config is None or self.signal.config.algo is None:
+            return None
+        return self.signal.config.algo
 
     def get_frame_storage_path(self):
         if self.signal is None or self.signal.config is None or self.signal.config.frame is None:

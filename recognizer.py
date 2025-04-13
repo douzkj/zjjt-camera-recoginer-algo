@@ -87,10 +87,15 @@ class RecognizeTask(object):
         # copy_and_rename_folder(image_dir, enhance_image_dir)
         # enhance_image(relative_task_image_path)
         # 3. 识别图像（带label）
-        logger.info("# 3. 识别图像（带label）")
-        label_images = os.path.join(self.frame_storage_config.get_storage_folder(), "label_images")
-        os.makedirs(label_images, exist_ok=True)
-        recognize_image_with_label(image_path, output_path=label_images)
+        alog_config = self.task.get_algo_config()
+        if alog_config is None:
+            logger.warning("通路算法配置为空")
+            return
+        if alog_config.label is not None and alog_config.label.enabled:
+            logger.info("# 识别图像（带label）")
+            label_images = os.path.join(self.frame_storage_config.get_storage_folder(), "label_images")
+            os.makedirs(label_images, exist_ok=True)
+            recognize_image_with_label(image_path, output_path=label_images)
         # print("识别结果: label_img64={}, labels={}".format(label_img64, labels))
         # 将识别后的结果推送至消息队列
 
@@ -165,8 +170,8 @@ class TaskManager:
                     tasks = self.get_signal_active_tasks(signal_id)
                     if len(tasks) > 0:
                         task_runners.append(self.run_pathway_tasks(tasks))
-                    else:
-                        logger.warning(f"当前通路[{signal_id}]无有效设备")
+                    # else:
+                        # logger.warning(f"当前通路[{signal_id}]无有效设备")
                 if len(task_runners) > 0:
                     # 运行异步方法
                     loop.run_until_complete(asyncio.gather(*task_runners))
