@@ -153,7 +153,7 @@ class CameraRtspCapture:
         self.is_capturing = False
         if self.thread is not None:
             self.thread.join()
-        if self.cap.isOpened():
+        if not self.cap and self.cap.isOpened():
             self.cap.release()
 
     def can_read(self):
@@ -163,6 +163,7 @@ class CameraRtspCapture:
         self.last_frame_seconds = int(time.time())
 
     async def read_single_frame(self):
+        self.open()
         frame_count = 0
         while self.can_read():
             # 计算读取间隔

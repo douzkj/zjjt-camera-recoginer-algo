@@ -98,8 +98,6 @@ class Subscriber(object):
                         except Exception as retry_error:
                             logger.error(f"Error retrying message: {retry_error}")
                             await message.nack()
-                        # # 拒绝消息并重新入队
-                        # await message.nack(requeue=False)
                     else:
                         # 超过最大重试次数, 过滤消息
                         await message.ack()

@@ -53,9 +53,3 @@ def setup_logging(logger_name=__name__,
         # 将处理器添加到日志记录器
         logger.addHandler(console_handler)
     return logger
-
-
-if __name__ == '__main__':
-    logger = setup_logging(console_collector=True)
-    print("22222")
-    logger.info('Hello')
