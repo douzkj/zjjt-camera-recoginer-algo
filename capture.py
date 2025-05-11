@@ -1,11 +1,9 @@
 import asyncio
 import os
-import queue
 import time
-from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
-from typing_extensions import AsyncIterable
 
 from setup import setup_logging
 
@@ -70,15 +68,18 @@ class CaptureFrame(object):
     def __init__(self, id, frame, timestamp=None):
         self.id = id
         self.frame = frame
-        self.timestamp = timestamp if timestamp is not None else int(time.time())
+        self.timestamp = timestamp if timestamp is not None else int(time.time() * 1000)
 
     def get_frame_id(self) -> str:
         return str(self.id)
 
+    def get_timestamp_ms(self):
+        return self.timestamp
+
     def get_frame_date_format(self, format='%Y%m%d%H%M%S'):
         import datetime, pytz
         # 将时间戳转换为datetime对象
-        dt_object = datetime.datetime.fromtimestamp(self.timestamp)
+        dt_object = datetime.datetime.fromtimestamp(int(self.timestamp / 1000))
         dt_object = dt_object.astimezone(pytz.timezone('Asia/Shanghai'))
         return dt_object.strftime(format)
 
@@ -105,9 +106,9 @@ class CameraRtspCapture:
     fps = None
     cap = None
     thread = None
-    queue: Queue = Queue(1)
+    queue = asyncio.Queue(maxsize=2)
+    executor = ThreadPoolExecutor(max_workers=2)
     saved_frame_count = 0
-    last_frame_seconds = 0
     frame_count = 0
 
     def __init__(self, rtsp_url,
@@ -116,13 +117,14 @@ class CameraRtspCapture:
         self.rtsp_url = rtsp_url
         self.frame_read_config = frame_read_config if frame_read_config is not None else DEFAULT_FRAME_READ_CONFIG
         self.rtsp_read_config = rtsp_read_config if rtsp_read_config is not None else RtspReadConfig()
-        # self._create_cap()
 
     def _create_cap(self):
         cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
         cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, self.rtsp_read_config.timeout * 1000)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, self.rtsp_read_config.buffer_size)
         cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, self.rtsp_read_config.open_timeout * 1000)  # 新增连接超时设置
+        # 硬件解码优化
+        cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
         self.cap = cap
         self.rtsp_valid()
 
@@ -137,99 +139,71 @@ class CameraRtspCapture:
             raise Exception(f"视频流[{self.rtsp_url}]帧率异常：{fps}")
         self.fps = fps
 
-    # def start(self):
-    #     if self.cap is None:
-    #         self._create_cap()
-    #     self.is_capturing = True
-    #     # 启动视频读取线程
-    #     self.thread = threading.Thread(target=self._read_frame_async, daemon=True)
-    #     self.thread.start()
-
-    def open(self):
-        if self.cap is None or not self.cap.isOpened():
-            self._create_cap()
-
-    def stop(self):
-        self.is_capturing = False
-        if self.thread is not None:
-            self.thread.join()
+    def close(self):
         if not self.cap and self.cap.isOpened():
             self.cap.release()
 
     def can_read(self):
         return self.cap.isOpened()
 
-    def log_read_time(self):
-        self.last_frame_seconds = int(time.time())
+    def _read_frame_sync(self):
+        self._create_cap()
+        try:
+            while self.can_read():
+                # # 计算读取间隔
+                # interval_seconds = int(time.time()) - last_frame_seconds
+                # if interval_seconds < self.frame_read_config.frame_interval_seconds:
+                #     time.sleep(max(self.frame_read_config.frame_interval_seconds - interval_seconds, 1))
+                frame = self._read_frame()
+                if frame is None:
+                    print(f"read frame failed. frame count:{self.frame_count}, saved frame count:{self.saved_frame_count}")
+                    return None
+                else:
+                    print(
+                        f"read frame [{self.rtsp_url}] success. ")
+                    capture_frame = CaptureFrame(id=f"{int(time.time()*1000)}_{os.urandom(2).hex()}", frame=frame)
+                    self.saved_frame_count += 1
+                    return capture_frame
+        finally:
+            self.close()
 
-    async def read_single_frame(self):
-        self.open()
-        frame_count = 0
-        while self.can_read():
-            # 计算读取间隔
-            interval_seconds = int(time.time()) - self.last_frame_seconds
-            if interval_seconds < self.frame_read_config.frame_interval_seconds:
-                await asyncio.sleep(max(self.frame_read_config.frame_interval_seconds - interval_seconds, 1))
-            frame = await self.read_frame()
-            self.log_read_time()
-            if frame is None:
-                print(f"read frame failed. frame count:{self.frame_count}, saved frame count:{self.saved_frame_count}")
-                return None
-            else:
-                print(
-                    f"read frame [{self.rtsp_url}] success. frame count:{frame_count}, saved frame count:{self.saved_frame_count}")
-                capture_frame = CaptureFrame(id=self.saved_frame_count, frame=frame)
-                self.saved_frame_count += 1
-                self.last_frame_seconds = int(time.time())
-                return capture_frame
-
-    async def read(self):
-        while True:
-            if self.is_capturing is False:
-                logger.warning(f"[{self.rtsp_url}]视频帧读取closed")
-                raise Exception(f"[{self.rtsp_url}] 视频帧读取closed")
-            try:
-                return self.queue.get_nowait()
-            except queue.Empty:
-                continue
-
-    async def read_frame_async_iter(self) -> AsyncIterable[CaptureFrame]:
-        while True:
-            if self.is_capturing is False:
-                logger.warning(f"[{self.rtsp_url}]视频帧读取closed")
-                break
-            try:
-                yield self.queue.get_nowait()
-            except queue.Empty:
-                continue
-
-    def _read_frame_async(self):
-        saved_frame_count = 0
+    async def read_single_frame(self, last_frame_seconds=0):
+        self._create_cap()
         frame_count = 0
         try:
-            while self.is_capturing and self.frame_read_config.can_continue_read(saved_frame_count):
-                can_save = frame_count % (self.fps * self.frame_read_config.frame_interval_seconds) == 0
-                frame = self._read_single_frame()
+            while self.can_read():
+                # 计算读取间隔
+                interval_seconds = int(time.time()) - last_frame_seconds
+                if interval_seconds < self.frame_read_config.frame_interval_seconds:
+                    await asyncio.sleep(max(self.frame_read_config.frame_interval_seconds - interval_seconds, 1))
+                frame = await self.read_frame()
                 if frame is None:
-                    print(f"read frame failed. frame count:{frame_count}, saved frame count:{saved_frame_count}")
-                    break
+                    print(f"read frame failed. frame count:{self.frame_count}, saved frame count:{self.saved_frame_count}")
+                    return None
                 else:
-                    if can_save:
-                        print(
-                            f"read frame [{self.rtsp_url}] success. frame count:{frame_count}, saved frame count:{saved_frame_count}")
-                        capture_frame = CaptureFrame(id=saved_frame_count, frame=frame)
-                        # 更新队列中的帧（保留最新一帧）
-                        if self.queue.full():
-                            try:
-                                self.queue.get_nowait()
-                            except queue.Empty:
-                                pass
-                        self.queue.put(capture_frame)
-                        saved_frame_count += 1
-                frame_count += 1
+                    print(
+                        f"read frame [{self.rtsp_url}] success. frame count:{frame_count}, saved frame count:{self.saved_frame_count}")
+                    capture_frame = CaptureFrame(id=self.saved_frame_count, frame=frame)
+                    self.saved_frame_count += 1
+                    return capture_frame
         finally:
-            self.stop()
-            print(f"Saved {saved_frame_count} frames. total {frame_count} frames")
+            self.close()
+
+    def _read_frame(self):
+        retries = 0
+        max_retries = self.frame_read_config.frame_retry_times
+        while retries < max_retries:
+            if not self.cap.isOpened():
+                print("could not open rtsp stream, please check url address. rtstp_url: {}".format(self.rtsp_url))
+                return None
+            ret, frame = self.cap.read()
+            if ret and frame is not None:
+                return frame
+            print(f"尝试读取帧「{self.rtsp_url}」失败，重试 {retries + 1}/{max_retries}...")
+            retries += 1
+            time.sleep(1)  # 等待 1 秒后重试
+        return None
+
 
     async def read_frame(self):
         retries = 0
@@ -246,29 +220,12 @@ class CameraRtspCapture:
             await asyncio.sleep(1)  # 等待 1 秒后重试
         return None
 
-    def _read_single_frame(self):
-        retries = 0
-        max_retries = self.frame_read_config.frame_retry_times
-        while retries < max_retries:
-            if not self.cap.isOpened():
-                print("could not open rtsp stream, please check url address. rtstp_url: {}".format(self.rtsp_url))
-                return None
-            ret, frame = self.cap.read()
-            if ret and frame is not None:
-                return frame
-            print(f"尝试读取帧「{self.rtsp_url}」失败，重试 {retries + 1}/{max_retries}...")
-            retries += 1
-            time.sleep(1)  # 等待 1 秒后重试
-        return None
-
     def update(self, rtsp_url,rtsp_read_config=None, frame_read_config=None):
         self.rtsp_url = rtsp_url
         if rtsp_read_config:
             self.rtsp_read_config = rtsp_read_config
         if self.frame_read_config:
             self.frame_read_config = frame_read_config
-        self.stop()
-        self.open()
 
 
 if __name__ == "__main__":
@@ -279,7 +236,6 @@ if __name__ == "__main__":
                             frame_read_config=frame_read_config)
     try:
         while True:
-            frame = cap.read()
             print(frame)
     except KeyboardInterrupt:
         print("结束")

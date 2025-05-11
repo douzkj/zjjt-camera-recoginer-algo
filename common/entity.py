@@ -6,7 +6,7 @@ T = TypeVar("T")
 
 class Response(BaseModel):
     code: int = 200
-    message: str = "OK"
+    msg: str = "OK"
     data: Optional[T] = None
 
 
@@ -15,5 +15,5 @@ class Response(BaseModel):
         return cls(code=200, data=data)
 
     @classmethod
-    def fail(cls, data: Optional[T] = None, message:str = None):
-        return cls(code=500, message=message, data=data)
+    def fail(cls,  message:str = None, data: Optional[T] = None):
+        return cls(code=500, msg=message, data=data)

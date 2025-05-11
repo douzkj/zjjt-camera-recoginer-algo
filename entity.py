@@ -1,4 +1,5 @@
 import json
+import time
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +48,13 @@ class SignalConfig(BaseModel):
     algo: SignalAlgoConfig = Field(..., description="算法配置")
 
 
+    def get_frequency(self):
+        return self.frame.read.frameIntervalSeconds
+
+    def is_labels_enabled(self):
+        return self.algo.label.enabled
+
+
 class Signal(BaseModel):
     signalName: str = Field(..., description="通路名称")
     signalId: str = Field(..., description="通路ID")
@@ -79,6 +87,29 @@ class CameraRecognizerTask(BaseModel):
         if self.signal is None or self.signal.config is None or self.signal.config.frame is None:
             return "jpg"
         return self.signal.config.frame.storage.frameImageSuffix
+
+
+class CollectorValue(BaseModel):
+    timestamp: int = Field(description="采集时间戳", default=int(time.time() * 1000))
+
+class Collector:
+    attr: dict = {}
+
+    def add(self, key, value):
+        import logging
+        if value is None:
+            logging.warning(f"collect info {key} is None")
+            return
+        self.attr[key] = value
+
+
+class FrameCollectorValue(CollectorValue):
+    frameImagePath: str = Field(..., description="图片帧路径")
+
+class LabelCollectorValue(CollectorValue):
+    labelImagePath: str = Field(..., description="打标图片帧路径")
+    labelJsonPath: str = Field(..., description="打标json路径")
+    shapes: list =  Field(description="打标框类型", default=[])
 
 
 class Event(BaseModel):

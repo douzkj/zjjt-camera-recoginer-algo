@@ -25,6 +25,25 @@ def calculate_similarity(image1_base64, image2_base64) -> float:
     # 实现相似度计算的逻辑
     return 0.0
 
+def cleanup_similar_images(folder):
+    # 保存当前工作目录
+    original_cwd = os.getcwd()
+    logging.info("测试")
+    try:
+        # 切换到 algo 目录
+        os.chdir(ALGO_DIR)
+        from algo_006_build_pseudo_dataset_for_semi_supervised_IS import find_similar_images
+        deleted_images = find_similar_images(folder)
+        return True, deleted_images
+    except Exception as e:
+        logging.exception(f"Error occurred executing algo_006_build_pseudo_dataset_for_semi_supervised_IS.calling find_similar_images. folder={folder}")
+        return False, []
+    finally:
+        # 切换回原始目录
+        os.chdir(original_cwd)
+
+
+
 # 增强算法：输入输出都是图片（base64）
 def enhance_image(relative_image_path):
     """
@@ -46,18 +65,23 @@ def enhance_image(relative_image_path):
 
 # 识别算法（带打标）：输入1张图片（base64）
 def recognize_image_with_label(image_path, output_path, num_class=2):
+    """
+
+    :param image_path:
+    :param output_path:
+    :param num_class:
+    :return: tag_image, tag_json
+    """
     # 保存当前工作目录
     original_cwd = os.getcwd()
     try:
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
         from algo_008_automatically_build_dataset import generate_json_annotation_for_raw_frame
-        config = 'Misc/cascade_mask_rcnn_R_50_FPN_3x.yaml'
-        weight_path = ALGO_WEIGHT_PATH
         os.makedirs(output_path, exist_ok=True)
-        generate_json_annotation_for_raw_frame(image_path,output_path, num_class)
+        return generate_json_annotation_for_raw_frame(image_path,output_path, num_class)
     except Exception as e:
-        print(f"Error occurred while calling generate_json_annotation_for_raw_frame: {e}")
+        logging.exception(f"Error occurred while calling generate_json_annotation_for_raw_frame: {e}")
         raise e
     finally:
         # 切换回原始目录

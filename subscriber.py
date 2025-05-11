@@ -6,8 +6,10 @@ import aio_pika
 from dotenv import load_dotenv
 
 from capture import FrameStorageConfig, FrameReadConfig
+from celery_app import celery_app
 from entity import CameraRecognizerTask, Camera, CameraRtsp
-from recognizer import RecognizeTask, task_manager
+from mq import MQSender
+from recognizer import RecognizeTask, TaskManager
 from setup import setup_logging, TaskLoggingFilter
 
 load_dotenv()  # 加载环境变量
@@ -18,6 +20,7 @@ RABBITMQ_USER = os.getenv('RABBITMQ_USER', 'guest')
 RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', 'guest')
 RABBITMQ_VHOST = os.getenv('RABBITMQ_VHOST', '/')
 QUEUE_RECOGNIZER_TASK = os.getenv('QUEUE_RECOGNIZER_TASK', 'zjjt:camera_recognizer:task')
+QUEUE_RECOGNIZER_COLLECTION = os.getenv('QUEUE_RECOGNIZER_COLLECTION', 'zjjt:camera_recognizer:collection')
 
 STORAGE_FRAME_IMAGE_FOLDER = os.getenv('STORAGE_FRAME_IMAGE_FOLDER', './storages/images')
 
@@ -29,31 +32,22 @@ SUBSCRIBER_PREFETCH_COUNT = int(os.getenv("SUBSCRIBER_PREFETCH_COUNT", 10))
 logger = setup_logging("subscriber")
 
 class Subscriber(object):
-    def __init__(self, host, port, user, password, vhost):
+    def __init__(self, amqp_url='amqp://guest:guest@localhost/'):
         self.queue = {}
         self.connection = None
-        self.host = host
-        self.port = port
-        self.user = user
-        self.password = password
-        self.vhost = vhost
+        self.amqp_url = amqp_url
         self.reconnecting = False  # 新增重连标志
 
     async def connect(self):
         while True:
             try:
-                self.connection = await aio_pika.connect_robust(
-                    host=self.host,
-                    port=self.port,
-                    login=self.user,
-                    password=self.password,
-                    virtualhost=self.vhost,
+                self.connection = await aio_pika.connect_robust(url=self.amqp_url,
                     reconnect_interval=5,  # 重试间隔5秒
                     reconnect_timeout=300,  # 总重试时间300秒
                     heartbeat_interval=60,
                 )
                 self.reconnecting = False
-                logger.info(f"Connected to RabbitMQ. host={self.host}")
+                logger.info(f"Connected to RabbitMQ. amqp_url={self.amqp_url}")
                 break
             except Exception as e:
                 self.reconnecting = True
@@ -122,45 +116,59 @@ class Subscriber(object):
             await asyncio.gather(*consumers)
 
 
-async def recognizer_task_handler(message):
-    # 处理消息的逻辑
-    logger.debug(f"处理识别任务: {message}")
-    # 转化为json对象
-    task_obj = json.loads(message)
-    task = CameraRecognizerTask(**task_obj)
-    camera: Camera = task.camera
-    rtsp: CameraRtsp = task.rtsp
-    logger.addFilter(TaskLoggingFilter(task))
+class TaskHandler:
+    sender: MQSender
+    task_manager: TaskManager
 
-    # 判定当前地址是否有效
-    if rtsp.is_expired():
-        logger.warning(f"[{task.taskId}][{camera.indexCode} - {camera.name}] RTSP地址已过期: {rtsp.url}")
-        return
-    frame_config = task.get_frame_config()
-    if frame_config is not None:
-        logger.warning(f"[{task.taskId}][{camera.indexCode} - {camera.name}] 帧读取配置: {frame_config.model_dump_json()}")
-        storage_config = FrameStorageConfig(store_folder=frame_config.storage.frameStoragePath, image_suffix=frame_config.storage.frameImageSuffix)
-        frame_read_config = FrameReadConfig(frame_interval_seconds=frame_config.read.frameIntervalSeconds,
-                                            frame_retry_times=frame_config.read.frameRetryTimes,
-                                            frame_retry_interval=frame_config.read.frameRetryInterval,
-                                            frame_window=frame_config.read.frameWindow
-                                            )
-    else:
-        storage_config = FrameStorageConfig(store_folder=os.path.join(STORAGE_FRAME_IMAGE_FOLDER, camera.indexCode))
-        frame_read_config = FrameReadConfig(frame_interval_seconds=FRAME_READ_INTERVAL_SECONDS,
-                                            frame_window=FRAME_READ_WINDOW)
-    # capture = CameraRtspCapture(rtsp.url, frame_storage_config=storage_config, frame_read_config=frame_read_config)
-    task = RecognizeTask(camera_task=task, frame_storage_config=storage_config, frame_read_config=frame_read_config)
-    task_manager.add_task(task)
-    # # 处理识别
-    # await task.do_recognizing()
+    def __init__(self, task_manager: TaskManager, sender: MQSender):
+        self.sender = sender
+        self.task_manager = task_manager
+
+    async def handler(self, message):
+        # 处理消息的逻辑
+        logger.debug(f"处理识别任务: {message}")
+        # 转化为json对象
+        task_obj = json.loads(message)
+        task = CameraRecognizerTask(**task_obj)
+        camera: Camera = task.camera
+        rtsp: CameraRtsp = task.rtsp
+        logger.addFilter(TaskLoggingFilter(task))
+
+        # 判定当前地址是否有效
+        if rtsp.is_expired():
+            logger.warning(f"[{task.taskId}][{camera.indexCode} - {camera.name}] RTSP地址已过期: {rtsp.url}")
+            return
+        frame_config = task.get_frame_config()
+        if frame_config is not None:
+            logger.warning(
+                f"[{task.taskId}][{camera.indexCode} - {camera.name}] 帧读取配置: {frame_config.model_dump_json()}")
+            storage_config = FrameStorageConfig(store_folder=frame_config.storage.frameStoragePath,
+                                                image_suffix=frame_config.storage.frameImageSuffix)
+            frame_read_config = FrameReadConfig(frame_interval_seconds=frame_config.read.frameIntervalSeconds,
+                                                frame_retry_times=frame_config.read.frameRetryTimes,
+                                                frame_retry_interval=frame_config.read.frameRetryInterval,
+                                                frame_window=frame_config.read.frameWindow
+                                                )
+        else:
+            storage_config = FrameStorageConfig(store_folder=os.path.join(STORAGE_FRAME_IMAGE_FOLDER, camera.indexCode))
+            frame_read_config = FrameReadConfig(frame_interval_seconds=FRAME_READ_INTERVAL_SECONDS,
+                                                frame_window=FRAME_READ_WINDOW)
+        # capture = CameraRtspCapture(rtsp.url, frame_storage_config=storage_config, frame_read_config=frame_read_config)
+        rec_task = RecognizeTask(camera_task=task, frame_storage_config=storage_config, frame_read_config=frame_read_config, collect_sender=self.sender)
+        self.task_manager.add_task(rec_task)
 
 
 # 使用示例
 if __name__ == "__main__":
-    subscriber = Subscriber(RABBITMQ_HOST, RABBITMQ_PORT, RABBITMQ_USER, RABBITMQ_PASSWORD, RABBITMQ_VHOST)
+    # 构建 AMQP 连接 URL
+    task_manager = TaskManager()
+    amqp_url = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASSWORD}@{RABBITMQ_HOST}:{RABBITMQ_PORT}{RABBITMQ_VHOST}"
+    subscriber = Subscriber(amqp_url)
+    sender = MQSender(amqp_url=amqp_url, queue_name=QUEUE_RECOGNIZER_COLLECTION)
     # 注册队列及处理器
-    subscriber.add_queue(QUEUE_RECOGNIZER_TASK, recognizer_task_handler)
+    # 注册队列及处理器
+    handler = TaskHandler(task_manager, sender)
+    subscriber.add_queue(QUEUE_RECOGNIZER_TASK, handler.handler)
     # 订阅
     # loop = asyncio.get_event_loop()
     # loop.run_until_complete(subscriber.run())
