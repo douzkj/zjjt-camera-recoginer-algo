@@ -8,7 +8,11 @@ import sys
 
 from dotenv import load_dotenv
 
+from setup import setup_logging
+
 load_dotenv()  # 加载环境变量
+
+logger = setup_logging("algorithm")
 
 ALGO_DIR = os.getenv("ALGO_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), 'algo'))
 ALGO_WEIGHT_PATH = os.getenv("ALGO_LABEL_WEIGHT_PATH", "weights")
@@ -25,18 +29,19 @@ def calculate_similarity(image1_base64, image2_base64) -> float:
     # 实现相似度计算的逻辑
     return 0.0
 
-def cleanup_similar_images(folder):
+def cleanup_similar_images(folder, start_time, end_time):
     # 保存当前工作目录
     original_cwd = os.getcwd()
-    logging.info("测试")
     try:
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
-        from algo_006_build_pseudo_dataset_for_semi_supervised_IS import find_similar_images
-        deleted_images = find_similar_images(folder)
+        logger.info(
+            f"execute algo_006_build_pseudo_dataset_for_semi_supervised_IS.delete_images_by_time_and_similarity. folder={folder}, start_time={start_time}, end_time={end_time}, hamming_threshold=20")
+        from algo_006_build_pseudo_dataset_for_semi_supervised_IS import delete_images_by_time_and_similarity
+        deleted_images = delete_images_by_time_and_similarity(folder, start_time=start_time, end_time=end_time, hamming_threshold=20)
         return True, deleted_images
     except Exception as e:
-        logging.exception(f"Error occurred executing algo_006_build_pseudo_dataset_for_semi_supervised_IS.calling find_similar_images. folder={folder}")
+        logger.exception(f"Error occurred executing algo_006_build_pseudo_dataset_for_semi_supervised_IS.calling find_similar_images. folder={folder}")
         return False, []
     finally:
         # 切换回原始目录
