@@ -15,9 +15,17 @@ DB_PORT = int(os.getenv("DB_PORT", "3306"))
 DB_NAME = os.getenv("DB_NAME", "zjjt_camera_recognizer")
 
 # 创建数据库引擎
-engine = create_engine(f'mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}')
+engine = create_engine(f'mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}',
+                       pool_size=20,
+                       max_overflow=36,
+                       pool_timeout=60,
+                       pool_recycle=3600)
 Base = declarative_base()
-Session = sessionmaker(bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# 推荐使用上下文管理器获取会话
+def Session():
+    return SessionLocal()
 
 
 # 通路模型
@@ -29,6 +37,10 @@ class Signal(Base):
     config = Column(String)  # 采集配置
     status = Column(Integer)  # 通路状态
     current_task_id = Column(String)    # 当前任务ID
+    type = Column(String) # 通路类型
+
+    def is_general(self):
+        return self.type == 'GENERAL'
 
 
 # 设备模型

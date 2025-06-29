@@ -1,21 +1,26 @@
 import asyncio
-import heapq
+import json
 import os
+import shutil
 import threading
 import time
+from functools import wraps
+from pathlib import Path
+# from celery.concurrency import Singleton
 
 import cv2
+import fcntl
 from celery import Celery
 from dotenv import load_dotenv
 
 import db
-from algorithm import recognize_image_with_label
-from capture import FrameStorageConfig, FrameReadConfig, RtspReadConfig, CaptureFrame
-from db import Session, Signal, Camera
-from entity import SignalConfig, Collector, FrameCollectorValue, LabelCollectorValue
+from algorithm import recognize_image_with_label, general_annotation
+from capture import FrameStorageConfig, FrameReadConfig
+from db import Session, Signal
+from entity import SignalConfig
 from mq import MQSender
 from recognizer import read_shapes
-from setup import setup_logging, TaskLoggingFilter
+from setup import setup_logging
 
 load_dotenv()  # 加载环境变量
 
@@ -27,6 +32,7 @@ RABBITMQ_VHOST = os.getenv('RABBITMQ_VHOST', '/')
 # QUEUE_RECOGNIZER_COLLECTION = os.getenv('QUEUE_RECOGNIZER_COLLECTION', 'zjjt:camera_recognizer:collection:v2')
 QUEUE_RECOGNIZER_COLLECTION = 'zjjt:camera_recognizer:collection:v2'
 amqp_url = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASSWORD}@{RABBITMQ_HOST}:{RABBITMQ_PORT}{RABBITMQ_VHOST}"
+STORAGE_GENERAL_BACKUP_FOLDER = os.getenv('STORAGE_GENERAL_BACKUP_FOLDER', './storages/general_test')
 
 # 创建 Celery 实例
 celery_app = Celery('recognizer_tasks', broker=amqp_url)
@@ -37,10 +43,13 @@ celery_app.conf.broker_transport_options = {
     'interval_max': 0.5,  # 最大重试间隔（秒）
 }
 
+celery_app.conf.worker_concurrency = 1
+celery_app.conf.worker_disable_rate_limits = True
+
 f_lock = threading.Lock()
 
 # 启用手动 ack
-celery_app.conf.task_acks_late = True
+celery_app.conf.task_acks_late = False
 # 当 worker 丢失时拒绝消息，让消息重新放回队列
 celery_app.conf.task_reject_on_worker_lost = True
 
@@ -50,33 +59,7 @@ celery_app.conf.update(
 logger = setup_logging("recognizer")
 
 existing_tasks = {}
-
-
-class CameraAppLogContext:
-    """摄像头日志上下文管理器"""
-    def __init__(self, logger, task_id, camera):
-        self.logger = logger
-        self.task_id = task_id
-        self.camera = camera
-        # 查找过滤器实例
-        self.filter = next(f for f in self.logger.filters if isinstance(f, TaskLoggingFilter))
-
-    def __enter__(self):
-        # 设置当前上下文信息
-        if self.filter:
-            self.filter.set_context(
-                self.task_id,
-                self.camera.index_code,
-                self.camera.name
-            )
-        return self.logger
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # 清理上下文信息
-        if self.filter:
-            self.filter.set_context('', '', '')
-
-
+import heapq
 class RtspBlackManager:
     def __init__(self):
         self._store = {}
@@ -131,119 +114,7 @@ class RtspBlackManager:
             self._store[rtsp_url] = expired_time
             heapq.heappush(self._heap, (expired_time, rtsp_url))
 
-
 black_manager = RtspBlackManager()
-collect_sender = MQSender(amqp_url, QUEUE_RECOGNIZER_COLLECTION)
-
-class CameraReader:
-    rtsp_url = None
-    cap = None
-    fps = None
-
-    def __init__(self, rtsp_url: str, frame_read_config: FrameReadConfig, rtsp_read_config: RtspReadConfig = None):
-        self.rtsp_url = rtsp_url
-        self.frame_read_config = frame_read_config
-        self.rtsp_read_config = rtsp_read_config if rtsp_read_config is not None else RtspReadConfig()
-        self._create_cap()
-
-    def _create_cap(self):
-        cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, self.rtsp_read_config.timeout * 1000)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, self.rtsp_read_config.buffer_size)
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, self.rtsp_read_config.open_timeout * 1000)  # 新增连接超时设置
-        # 硬件解码优化
-        cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
-        self.cap = cap
-
-    def rtsp_valid(self):
-        if not self.cap.isOpened():
-            logger.error("could not open rtsp stream, please check url address. rtstp_url: {}".format(self.rtsp_url))
-            raise Exception("could not open rtsp stream, please check url address. rtstp_url: {}".format(self.rtsp_url))
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        logger.info(f"视频流[{self.rtsp_url}]帧率：{fps}")
-        if fps > 10000:
-            raise Exception(f"视频流[{self.rtsp_url}]帧率异常：{fps}")
-        self.fps = fps
-
-    def read_frame(self):
-        self.rtsp_valid()
-        retries = 0
-        max_retries = self.frame_read_config.frame_retry_times
-
-        while retries < max_retries:
-            if not self.cap.isOpened():
-                print("could not open rtsp stream, please check url address. rtstp_url: {}".format(self.rtsp_url))
-                return None
-            ret, frame = self.cap.read()
-            if ret and frame is not None:
-                return CaptureFrame(id=retries, frame=frame)
-            print(f"尝试读取帧「{self.rtsp_url}」失败，重试 {retries + 1}/{max_retries}...")
-            retries += 1
-            time.sleep(self.frame_read_config.frame_retry_interval)  # 等待 1 秒后重试
-        return None
-
-
-class RecognizerApp:
-    task_id = None
-    camera_reader = None
-    sender = None
-    collector = Collector()
-    black_manager = None
-
-    def __init__(self,
-                 task_id,
-                 camera: Camera,
-                 pathway: Signal,
-                 signal_config: SignalConfig,
-                 frame_storage_config: FrameStorageConfig,
-                 frame_read_config: FrameReadConfig,
-                 rtsp_black_manager: RtspBlackManager
-                 ):
-        self.task_id = task_id
-        self.camera = camera
-        self.pathway = pathway
-        self.signal_config = signal_config
-        self.frame_storage_config = frame_storage_config
-        self.camera_reader = CameraReader(
-            rtsp_url=self.camera.latest_rtsp_url,
-            frame_read_config=frame_read_config
-        )
-        self.black_manager = rtsp_black_manager
-
-    def read_and_recognize(self):
-        try:
-            camera_frame = self.camera_reader.read_frame()
-        except Exception as e:
-            logger.exception(f"[{self.task_id}][{self.camera.index_code} - {self.camera.name}] 读取帧失败: {e}")
-            self.black_manager.add(rtsp_url=self.camera.latest_rtsp_url,
-                                   expired_time=self.camera.latest_rtsp_expired_time)
-            return False
-        if camera_frame is None:
-            self.black_manager.add(rtsp_url=self.camera.latest_rtsp_url,
-                                   expired_time=self.camera.latest_rtsp_expired_time)
-            return False
-        storage_folder = self.frame_storage_config.get_storage_folder()
-        os.makedirs(storage_folder, exist_ok=True)
-        image_filename =  f"{self.pathway.id}-{camera_frame.get_frame_date_format()}-{self.camera.index_code}.{self.frame_storage_config.image_suffix}"
-        image_path = os.path.join(storage_folder, image_filename)
-        with f_lock:
-            cv2.imwrite(image_path, camera_frame.frame)
-        self.collector.add('frame', FrameCollectorValue(frameImagePath=image_path, timestamp=camera_frame.timestamp))
-        if self.signal_config.is_labels_enabled():
-            logger.info(f"[{self.task_id}][{self.camera.index_code} - {self.camera.name}] # 识别图像（带label）")
-            label_images = os.path.join(storage_folder, "label_images")
-            try:
-                tag_image, tag_json = recognize_image_with_label(image_path, output_path=label_images)
-                shapes = read_shapes(tag_json)
-                self.collector.add('label', LabelCollectorValue(shapes=shapes, labelJsonPath=tag_json,
-                                                                labelImagePath=label_images))
-            except Exception as e:
-                logger.exception(f"[{self.task_id}][{self.camera.index_code} - {self.camera.name}] recognize_image_with_label error")
-        return True
-
-    def get_collection(self):
-        return self.collector.attr
-
 
 def des_signal_config(config: str):
     if config is None or len(config) == 0:
@@ -255,6 +126,59 @@ def des_signal_config(config: str):
     return None
 
 
+class PathwayConcurrencyControl:
+    """基于pathway_id的分布式并发控制器"""
+    LOCK_TIMEOUT = 60 * 5  # 锁超时时间（秒）
+
+    def __init__(self, lock_dir='locks'):
+        self.lock_dir = lock_dir
+        os.makedirs(lock_dir, exist_ok=True)
+
+    def _get_lock_path(self, pathway_id):
+        return Path(os.path.join(self.lock_dir, f"pathway_{pathway_id}.lock"))
+
+    def acquire(self, pathway_id):
+        lock_file = self._get_lock_path(pathway_id)
+        try:
+            fd = open(lock_file, 'w')
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+
+    def release(self, pathway_id):
+        lock_file = self._get_lock_path(pathway_id)
+        if lock_file.exists():
+            lock_file.unlink()
+
+pathway_control = PathwayConcurrencyControl()
+
+
+def pathway_concurrency_limit(func):
+
+    global pathway_control
+    """并发控制装饰器"""
+
+    @wraps(func)
+    def wrapper(pathway_id, *args, **kwargs):
+        # 尝试获取锁
+        if not pathway_control.acquire(pathway_id):
+            # 触发任务重试
+            raise func.retry(
+                args=(pathway_id, *args),
+                kwargs=kwargs,
+                countdown=10,  # 重试间隔
+                max_retries=3  # 最大重试次数
+            )
+
+        try:
+            return func(pathway_id, *args, **kwargs)
+        finally:
+            # 确保释放锁
+            pathway_control.release(pathway_id)
+
+    return wrapper
+
 @celery_app.task(
     name='celery_app.perform_recognition',  # 确保模块路径正确
     bind=True,
@@ -263,11 +187,6 @@ def des_signal_config(config: str):
     # raise_on_duplicate=True  # 重复任务直接抛出异常
 )
 def perform_recognition(cl, pathway_id):
-    """
-    :param cl:
-    :param pathway_id: 通路ID
-    :return:
-    """
     global black_manager
     session = Session()
     try:
@@ -279,10 +198,11 @@ def perform_recognition(cl, pathway_id):
         if pathway.status != 1:
             logger.info(f"通路 {pathway_id} 采集状态非活跃，跳过识别任务")
             return
+        collect_sender = MQSender(amqp_url, QUEUE_RECOGNIZER_COLLECTION)
         signal_config = des_signal_config(pathway.config)
         frame_config = signal_config.frame
         frame_storage_config = FrameStorageConfig(store_folder=frame_config.storage.frameStoragePath,
-                                                  image_suffix=frame_config.storage.frameImageSuffix)
+                                            image_suffix=frame_config.storage.frameImageSuffix)
         frame_read_config = FrameReadConfig(frame_interval_seconds=frame_config.read.frameIntervalSeconds,
                                             frame_retry_times=frame_config.read.frameRetryTimes,
                                             frame_retry_interval=frame_config.read.frameRetryInterval,
@@ -292,131 +212,87 @@ def perform_recognition(cl, pathway_id):
         task_id = pathway.current_task_id
         cameras = session.query(db.Camera).filter(db.Camera.signal_id == pathway_id).all()
         for camera in cameras:
-            # with CameraAppLogContext(logger, task_id, camera) as ctx_logger:
-            #     ctx_logger.info(f"开始识别设备")
-            #     # logger.info(f"开始识别设备:[{camera.index_code} - {camera.name}]")
-            #     try:
-            #         if camera.is_rtsp_expired():
-            #             # logger.warning(
-            #             #     f"[{task_id}][{camera.index_code} - {camera.name}] RTSP地址已过期: {camera.latest_rtsp_url}")
-            #             ctx_logger.warning(
-            #                 f" RTSP地址已过期: {camera.latest_rtsp_url}")
-            #             continue
-            #         if black_manager.check(camera.latest_rtsp_url):
-            #             # logger.warning(
-            #             #     f"[{task_id}][{camera.index_code} - {camera.name}] 存在黑名单中. RTSP访问: {camera.latest_rtsp_url}")
-            #             ctx_logger.warning('[{camera.latest_rtsp_url}]存在黑名单中. 禁止访问')
-            #             continue
-            #         # storage_folder = frame_storage_config.get_storage_folder()
-            #         # image_path = os.path.join(storage_folder, f"{pathway.id}-{get_frame_date_format()}-{camera.index_code}.{frame_storage_config.image_suffix}")
-            #         # ret, collection = read_and_recognize(rtsp_url=camera.latest_rtsp_url,
-            #         #                               storage_folder=frame_storage_config.get_storage_folder(),
-            #         #                               image_path=image_path,
-            #         #                               algo_label_opened=signal_config.algo.label.enabled)
-            #         # if ret is False:
-            #         #     black_manager.add(camera.latest_rtsp_url, camera.latest_rtsp_expired_time)
-            #         #     continue
-            #         # message = {
-            #         #     "camera": {"indexCode": camera.index_code},
-            #         #     'signal': {"signalId": pathway_id},
-            #         #     'taskId': task_id,
-            #         #     "collect": collection,
-            #         #     "timestamp": int(time.time() * 1000),
-            #         # }
-            #         # logger.info(f"send collect message: {json.dumps(message)}")
-            #         r_app = RecognizerApp(
-            #             task_id=task_id,
-            #             camera=camera,
-            #             pathway=pathway,
-            #             signal_config=signal_config,
-            #             frame_storage_config=frame_storage_config,
-            #             frame_read_config=frame_read_config,
-            #             rtsp_black_manager=black_manager,
-            #         )
-            #         ret = r_app.read_and_recognize()
-            #         if not ret:
-            #             ctx_logger.warning(
-            #                 f" read_and_recognize failed.")
-            #             continue
-            #         message = {
-            #             "camera": {"indexCode": camera.index_code},
-            #             'signal': {"signalId": pathway_id},
-            #             'taskId': task_id,
-            #             "collect": r_app.get_collection(),
-            #             "timestamp": int(time.time() * 1000),
-            #         }
-            #         asyncio.run(collect_sender.send_message(message))
-            #         del r_app
-            #         time.sleep(0.001)
-            #     except Exception as e:
-            #         ctx_logger.exception(f"执行[{camera.index_code} - {camera.name}]识别任务时出错: {e}")
-            logger.info(f"开始识别设备")
-            # logger.info(f"开始识别设备:[{camera.index_code} - {camera.name}]")
             try:
                 if camera.is_rtsp_expired():
-                    logger.warning(
-                        f"[{task_id}][{camera.index_code} - {camera.name}] RTSP地址已过期: {camera.latest_rtsp_url}")
+                    logger.warning(f"[{task_id}][{camera.index_code} - {camera.name}] RTSP地址已过期: {camera.latest_rtsp_url}")
                     continue
                 if black_manager.check(camera.latest_rtsp_url):
-                    logger.warning(
-                        f"[{task_id}][{camera.index_code} - {camera.name}] 存在黑名单中. RTSP禁止访问: {camera.latest_rtsp_url}")
+                    logger.warning(f"[{task_id}][{camera.index_code} - {camera.name}] 存在黑名单中. RTSP访问: {camera.latest_rtsp_url}")
                     continue
-                # storage_folder = frame_storage_config.get_storage_folder()
-                # image_path = os.path.join(storage_folder, f"{pathway.id}-{get_frame_date_format()}-{camera.index_code}.{frame_storage_config.image_suffix}")
+                pathway = session.query(Signal).get(pathway_id)
+                if not pathway:
+                    logger.warning(f"未找到通路 ID 为 {pathway_id} 的记录")
+                    continue
+
+                if pathway.status != 1:
+                    logger.info(f"通路 {pathway_id} 采集状态非活跃，跳过识别任务")
+                    continue
+                storage_folder = frame_storage_config.get_storage_folder()
+                ts = int(time.time() * 1000)
+                image_path = os.path.join(storage_folder, f"{pathway.id}-{get_frame_date_format(ts=ts)}-{camera.index_code}.{frame_storage_config.image_suffix}")
+                # 读取frame
+                ret, frame = read_rtsp_frame(camera.latest_rtsp_url)
+                if ret is False:
+                    black_manager.add(camera.latest_rtsp_url, camera.latest_rtsp_expired_time)
+                    continue
+                collector = {}
+                # 保存帧图片
+                os.makedirs(storage_folder, exist_ok=True)
+                with f_lock:
+                    cv2.imwrite(image_path, frame)
+                if pathway.is_general():
+                    logger.info("# 通用图片拷贝备份至 general_test")
+                    os.makedirs(STORAGE_GENERAL_BACKUP_FOLDER, exist_ok=True)
+                    shutil.copy2(image_path, STORAGE_GENERAL_BACKUP_FOLDER)
+                collector['frame'] = {"frameImagePath": image_path,
+                                      'timestamp': int(time.time() * 1000) if ts is None else ts}
+                if signal_config.algo.label.enabled:
+                    try:
+                        tag_image, tag_json = None, None
+                        if pathway.is_general():
+                            ret = general_annotation(
+                                os.path.join(STORAGE_GENERAL_BACKUP_FOLDER, os.path.basename(image_path)))
+                            if ret is not None:
+                                tag_image, tag_json = ret[0], ret[1]
+                        else:
+                            logger.info("# 识别图像（带label）")
+                            label_images = os.path.join(storage_folder, "label_images")
+                            tag_image, tag_json = recognize_image_with_label(image_path, output_path=label_images)
+                        shapes = read_shapes(tag_json)
+                        collector['label'] = {'labelImagePath': tag_image, 'shapes': shapes,
+                                              'labelJsonPath': tag_json,
+                                              'timestamp': int(time.time() * 1000)}
+                    except Exception as e:
+                        logger.exception("recognize_image_with_label error")
                 # ret, collection = read_and_recognize(rtsp_url=camera.latest_rtsp_url,
                 #                               storage_folder=frame_storage_config.get_storage_folder(),
                 #                               image_path=image_path,
-                #                               algo_label_opened=signal_config.algo.label.enabled)
-                # if ret is False:
-                #     black_manager.add(camera.latest_rtsp_url, camera.latest_rtsp_expired_time)
-                #     continue
-                # message = {
-                #     "camera": {"indexCode": camera.index_code},
-                #     'signal': {"signalId": pathway_id},
-                #     'taskId': task_id,
-                #     "collect": collection,
-                #     "timestamp": int(time.time() * 1000),
-                # }
-                # logger.info(f"send collect message: {json.dumps(message)}")
-                r_app = RecognizerApp(
-                    task_id=task_id,
-                    camera=camera,
-                    pathway=pathway,
-                    signal_config=signal_config,
-                    frame_storage_config=frame_storage_config,
-                    frame_read_config=frame_read_config,
-                    rtsp_black_manager=black_manager,
-                )
-                ret = r_app.read_and_recognize()
-                if not ret:
-                    logger.warning(
-                        f"[{task_id}][{camera.index_code} - {camera.name}] read_and_recognize failed.")
-                    continue
+                #                               algo_label_opened=,
+                #                                      is_general=pathway.is_general(),
+                #                                      ts=ts)
+
                 message = {
                     "camera": {"indexCode": camera.index_code},
                     'signal': {"signalId": pathway_id},
                     'taskId': task_id,
-                    "collect": r_app.get_collection(),
+                    "collect": collector,
                     "timestamp": int(time.time() * 1000),
                 }
+                logger.info(f"send collect message: {json.dumps(message)}")
                 asyncio.run(collect_sender.send_message(message))
-                del r_app
-                time.sleep(0.001)
             except Exception as e:
-                logger.exception(f"[{task_id}][{camera.index_code} - {camera.name}] 识别任务时出错: {e}")
+                logger.exception(f"执行[{camera.index_code} - {camera.name}]识别任务时出错: {e}")
     except Exception as e:
         logger.exception(f"执行识别任务时出错: {e}")
     finally:
         session.close()
 
-
-def get_frame_date_format(format='%Y%m%d%H%M%S'):
+def get_frame_date_format(format='%Y%m%d%H%M%S', ts=None):
     import datetime, pytz
     # 将时间戳转换为datetime对象
-    dt_object = datetime.datetime.fromtimestamp(int(time.time()))
+    dt_object = datetime.datetime.fromtimestamp(int(time.time()) if ts is None else int(ts / 1000))
     dt_object = dt_object.astimezone(pytz.timezone('Asia/Shanghai'))
     return dt_object.strftime(format)
-
 
 def read_frame(rtsp_url):
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
@@ -445,7 +321,18 @@ def read_frame(rtsp_url):
     return None
 
 
-def read_and_recognize(rtsp_url, storage_folder, image_path, algo_label_opened=False):
+def read_rtsp_frame(rtsp_url):
+    try:
+        frame = read_frame(rtsp_url)
+    except Exception as e:
+        logger.exception(f"读取帧时出错: {e}")
+        return False, None
+    if frame is None:
+        logger.error(f"Failed to read frame from {rtsp_url}")
+        return False, None
+    return True, frame
+
+def read_and_recognize(rtsp_url, storage_folder, image_path, algo_label_opened=False, ts=None, is_general=False):
     collector = {}
     try:
         frame = read_frame(rtsp_url)
@@ -458,7 +345,7 @@ def read_and_recognize(rtsp_url, storage_folder, image_path, algo_label_opened=F
     os.makedirs(storage_folder, exist_ok=True)
     with f_lock:
         cv2.imwrite(image_path, frame)
-    collector['frame'] = {"frameImagePath": image_path, 'timestamp': int(time.time() * 1000)}
+    collector['frame'] = {"frameImagePath": image_path, 'timestamp': int(time.time() * 1000) if ts is None else ts}
     if algo_label_opened:
         logger.info("# 识别图像（带label）")
         label_images = os.path.join(storage_folder, "label_images")
@@ -466,10 +353,11 @@ def read_and_recognize(rtsp_url, storage_folder, image_path, algo_label_opened=F
             tag_image, tag_json = recognize_image_with_label(image_path, output_path=label_images)
             shapes = read_shapes(tag_json)
             collector['label'] = {'labelImagePath': tag_image, 'shapes': shapes, 'labelJsonPath': tag_json,
-                                  'timestamp': int(time.time() * 1000)}
+                                   'timestamp': int(time.time() * 1000)}
         except Exception as e:
             logger.exception("recognize_image_with_label error")
     return True, collector
+
 
 
 class TaskScheduler:
@@ -525,9 +413,7 @@ class TaskScheduler:
             finally:
                 session.close()
 
-
 scheduler = TaskScheduler()
-
 
 # 配置定时任务
 @celery_app.on_after_finalize.connect
@@ -545,7 +431,6 @@ def refresh_pathway_tasks():
     global scheduler
     logger.info("refresh_pathway_tasks")
     scheduler.refresh_tasks()
-
 
 # @beat_init.connect
 # def init_scheduler(**kwargs):
@@ -610,19 +495,16 @@ def update_periodic_tasks(sender):
         session.close()
 
 
+def test_result(r):
+    if r == 1:
+        return
+    return [1, 2]
+
+
 if __name__ == '__main__':
-    pathway_intervals = {}
-    interval = 5
-    while True:
-        session = Session()
-        try:
-            active_pathways = session.query(Signal).filter(Signal.status == 1).all()
-            for pathway in active_pathways:
-                rt = celery_app.send_task(
-                    'celery_app.perform_recognition',
-                    args=(pathway.id,),
-                )
-                print("Rt", rt)
-            time.sleep(5)
-        finally:
-            session.close()
+    r1 = test_result(1)
+    print(r1)
+    r3=test_result(2)
+    print(r3)
+    # dtg = get_frame_date_format()
+    # print(dtg)

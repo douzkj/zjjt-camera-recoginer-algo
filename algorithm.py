@@ -36,9 +36,9 @@ def cleanup_similar_images(folder, start_time, end_time):
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
         logger.info(
-            f"execute algo_006_build_pseudo_dataset_for_semi_supervised_IS.delete_images_by_time_and_similarity. folder={folder}, start_time={start_time}, end_time={end_time}, hamming_threshold=20")
-        from algo_006_build_pseudo_dataset_for_semi_supervised_IS import delete_images_by_time_and_similarity
-        deleted_images = delete_images_by_time_and_similarity(folder, start_time=start_time, end_time=end_time, hamming_threshold=20)
+            f"execute algo_006_build_pseudo_dataset_for_semi_supervised_IS.find_similar_images_enhanced. folder={folder}, start_time={start_time}, end_time={end_time}, cutoff=20")
+        from algo_006_build_pseudo_dataset_for_semi_supervised_IS import find_similar_images_enhanced
+        deleted_images = find_similar_images_enhanced(folder, start_time=start_time, end_time=end_time, cutoff=20)
         return True, deleted_images
     except Exception as e:
         logger.exception(f"Error occurred executing algo_006_build_pseudo_dataset_for_semi_supervised_IS.calling find_similar_images. folder={folder}")
@@ -47,6 +47,24 @@ def cleanup_similar_images(folder, start_time, end_time):
         # 切换回原始目录
         os.chdir(original_cwd)
 
+
+def general_annotation(image_path):
+    # 保存当前工作目录
+    original_cwd = os.getcwd()
+    try:
+        # 切换到 algo 目录
+        os.chdir(ALGO_DIR)
+        logger.debug(
+            f"execute algo_006_build_pseudo_IS_dataset.generate_annotation. ")
+        from algo_006_build_pseudo_IS_dataset import generate_annotation
+        return generate_annotation(image_path)
+    except Exception as e:
+        logger.exception(
+            f"Error occurred executing algo_006_build_pseudo_IS_dataset.calling generate_annotation. image_path={image_path}")
+        return None
+    finally:
+        # 切换回原始目录
+        os.chdir(original_cwd)
 
 
 # 增强算法：输入输出都是图片（base64）
