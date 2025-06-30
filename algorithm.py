@@ -36,12 +36,12 @@ def cleanup_similar_images(folder, start_time, end_time):
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
         logger.info(
-            f"execute algo_006_build_pseudo_dataset_for_semi_supervised_IS.find_similar_images_enhanced. folder={folder}, start_time={start_time}, end_time={end_time}, cutoff=20")
-        from algo_006_build_pseudo_dataset_for_semi_supervised_IS import find_similar_images_enhanced
+            f"execute algo_006_build_pseudo_IS_dataset.find_similar_images_enhanced. folder={folder}, start_time={start_time}, end_time={end_time}, cutoff=20")
+        from algo_006_build_pseudo_IS_dataset import find_similar_images_enhanced
         deleted_images = find_similar_images_enhanced(folder, start_time=start_time, end_time=end_time, cutoff=20)
         return True, deleted_images
     except Exception as e:
-        logger.exception(f"Error occurred executing algo_006_build_pseudo_dataset_for_semi_supervised_IS.calling find_similar_images. folder={folder}")
+        logger.exception(f"Error occurred executing algo_006_build_pseudo_IS_dataset.calling find_similar_images. folder={folder}")
         return False, []
     finally:
         # 切换回原始目录
