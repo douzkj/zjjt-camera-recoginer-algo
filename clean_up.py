@@ -14,6 +14,7 @@ class TaskDetail(Base):
     id = Column(Integer, primary_key=True)
     task_id = Column(String)    # 当前任务ID
     frame_image_path = Column(String)  # 帧图片路径
+    frame_time_ms = Column(Integer)  # 帧时间戳
 
 def cleanup_records(start_id, end_id, parent_folder = None, folder_pattern = None, deleted_images=None):
     with Session() as session:
@@ -50,12 +51,21 @@ def cleanup_records(start_id, end_id, parent_folder = None, folder_pattern = Non
         logger.info(f"处理ID批次为【{start_id} - {end_id}】当前批次删除{deleted_cont}条.")
         return deleted_cont
 
-def cleanup_images_records_concurrency(batch_size = 1000, concurrency = 16, parent_folder = None, folder_pattern = None, deleted_images=None):
+def cleanup_images_records_concurrency(batch_size = 1000, concurrency = 16, start_time_ms=None, end_time_ms=None, parent_folder = None, folder_pattern = None, deleted_images=None):
     with Session() as session:
-        stats = session.query(func.max(TaskDetail.id).label('max_id'),
+        if start_time_ms is not None and end_time_ms is not None:
+            stats = session.query(func.max(TaskDetail.id).label('max_id'),
                               func.min(TaskDetail.id).label('min_id'),
                               func.count(TaskDetail.id).label('total')
-                              ).one()
+                              ).filter(
+                TaskDetail.frame_time_ms >= start_time_ms,
+                TaskDetail.frame_time_ms <= end_time_ms,
+            ).one()
+        else:
+            stats = session.query(func.max(TaskDetail.id).label('max_id'),
+                                  func.min(TaskDetail.id).label('min_id'),
+                                  func.count(TaskDetail.id).label('total')
+                                  ).one()
         logger.info(f"总记录数: {stats.total} [ID范围 {stats.min_id}-{stats.max_id}]")
         # 生成分块范围
         chunks = []

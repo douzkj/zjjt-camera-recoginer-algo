@@ -240,18 +240,18 @@ def perform_recognition(cl, pathway_id):
                 os.makedirs(storage_folder, exist_ok=True)
                 with f_lock:
                     cv2.imwrite(image_path, frame)
-                if pathway.is_general():
-                    logger.info("# 通用图片拷贝备份至 general_test")
-                    os.makedirs(STORAGE_GENERAL_BACKUP_FOLDER, exist_ok=True)
-                    shutil.copy2(image_path, STORAGE_GENERAL_BACKUP_FOLDER)
+                # if pathway.is_general():
+                #     logger.info("# 通用图片拷贝备份至 general_test")
+                #     os.makedirs(STORAGE_GENERAL_BACKUP_FOLDER, exist_ok=True)
+                #     shutil.copy2(image_path, STORAGE_GENERAL_BACKUP_FOLDER)
                 collector['frame'] = {"frameImagePath": image_path,
                                       'timestamp': int(time.time() * 1000) if ts is None else ts}
                 if signal_config.algo.label.enabled:
                     try:
                         tag_image, tag_json = None, None
                         if pathway.is_general():
-                            ret = general_annotation(
-                                os.path.join(STORAGE_GENERAL_BACKUP_FOLDER, os.path.basename(image_path)))
+                            # general_test_copied_filepath =  os.path.join(STORAGE_GENERAL_BACKUP_FOLDER, os.path.basename(image_path))
+                            ret = general_annotation(image_path)
                             if ret is not None:
                                 tag_image, tag_json = ret[0], ret[1]
                         else:

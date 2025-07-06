@@ -20,11 +20,15 @@ def async_cleanup_task(folder, start_time, end_time):
     try:
         from algorithm import cleanup_similar_images
         from clean_up import cleanup_images_records_concurrency
-
+        import datetime, pytz
+        start_time_object = datetime.datetime.strptime(start_time, "%Y%m%d%H%M%S")
+        end_time_object = datetime.datetime.strptime(end_time, "%Y%m%d%H%M%S")
+        start_time_ms = int(start_time_object.astimezone(pytz.timezone('Asia/Shanghai')).timestamp() * 1000)
+        end_time_ms = int(end_time_object.astimezone(pytz.timezone('Asia/Shanghai')).timestamp() * 1000)
         r, images = cleanup_similar_images(folder, start_time, end_time)
         if r:
             logger.info(f"执行去重算法成功.... 开始删除重复图片记录. images={images}")
-            deleted_records_count = cleanup_images_records_concurrency(folder_pattern=folder)
+            deleted_records_count = cleanup_images_records_concurrency(folder_pattern=folder, start_time_ms=start_time_ms, end_time_ms=end_time_ms)
             cleanup_task_state.update({
                 "deletedRecordsCount": deleted_records_count,
                 "similarImagesCount": len(images) if images is not None else 0,
