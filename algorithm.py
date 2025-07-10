@@ -29,16 +29,16 @@ def calculate_similarity(image1_base64, image2_base64) -> float:
     # 实现相似度计算的逻辑
     return 0.0
 
-def cleanup_similar_images(folder, start_time, end_time):
+def cleanup_similar_images(folder, start_time, end_time, cutoff=15):
     # 保存当前工作目录
     original_cwd = os.getcwd()
     try:
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
         logger.info(
-            f"execute algo_006_build_pseudo_IS_dataset.find_similar_images_enhanced. folder={folder}, start_time={start_time}, end_time={end_time}, cutoff=20")
+            f"execute algo_006_build_pseudo_IS_dataset.find_similar_images_enhanced. folder={folder}, start_time={start_time}, end_time={end_time}, cutoff={cutoff}")
         from algo_006_build_pseudo_IS_dataset import find_similar_images_enhanced
-        deleted_images = find_similar_images_enhanced(folder, start_time=start_time, end_time=end_time, cutoff=20)
+        deleted_images = find_similar_images_enhanced(folder, start_time=start_time, end_time=end_time, cutoff=cutoff)
         return True, deleted_images
     except Exception as e:
         logger.exception(f"Error occurred executing algo_006_build_pseudo_IS_dataset.calling find_similar_images. folder={folder}")

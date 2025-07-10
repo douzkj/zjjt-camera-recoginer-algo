@@ -16,7 +16,7 @@ cleanup_task_state = {"is_running": False}
 cleanup_lock = asyncio.Lock()
 
 
-def async_cleanup_task(folder, start_time, end_time):
+def async_cleanup_task(folder, start_time, end_time, cutoff):
     try:
         from algorithm import cleanup_similar_images
         from clean_up import cleanup_images_records_concurrency
@@ -25,7 +25,7 @@ def async_cleanup_task(folder, start_time, end_time):
         end_time_object = datetime.datetime.strptime(end_time, "%Y%m%d%H%M%S")
         start_time_ms = int(start_time_object.astimezone(pytz.timezone('Asia/Shanghai')).timestamp() * 1000)
         end_time_ms = int(end_time_object.astimezone(pytz.timezone('Asia/Shanghai')).timestamp() * 1000)
-        r, images = cleanup_similar_images(folder, start_time, end_time)
+        r, images = cleanup_similar_images(folder, start_time, end_time, cutoff)
         if r:
             logger.info(f"执行去重算法成功.... 开始删除重复图片记录. images={images}")
             deleted_records_count = cleanup_images_records_concurrency(folder_pattern=folder, start_time_ms=start_time_ms, end_time_ms=end_time_ms)
@@ -47,7 +47,9 @@ async def cleanup_similar(
         background_tasks: BackgroundTasks,
         folder: str=Body(..., description="清理的路径"),
         start: str=Body(..., description="开始时间"),
-        end: str=Body(..., description="结束时间")):
+        end: str=Body(..., description="结束时间"),
+        cutoff: int=Body(15, description="相似度阈值")
+):
     """
     清理重复图片
     :param folder: 流地址
@@ -64,7 +66,7 @@ async def cleanup_similar(
             "similarImagesCount": 0,
             "error": None
         })
-        thread = threading.Thread(target=async_cleanup_task, args=(folder, start, end))
+        thread = threading.Thread(target=async_cleanup_task, args=(folder, start, end, cutoff))
         thread.start()
         # background_tasks.add_task(
         #     async_cleanup_task,
