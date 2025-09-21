@@ -12,7 +12,7 @@ from starlette.responses import JSONResponse
 
 from celery_app import celery_app
 from db import Session, Signal
-from services import rtsp, task
+from services import rtsp, task, algo
 
 # 在Flask启动前设置
 
@@ -48,7 +48,7 @@ async def lifespan(fastapi: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.include_router(rtsp.router)
 app.include_router(task.router)
-
+app.include_router(algo.router)
 
 @app.exception_handler(Exception)
 async def http_exception_handler(request: Request, exc: Exception):

@@ -73,22 +73,25 @@ def statistics():
             last_min_id = max(records, key=lambda x: x.id).id + 1
             logger.info(f"当前批次的最后的ID为：{last_min_id}")
             for record in records:
+                label_types_arr = []
+                if record.label_types is not None and len(record.label_types) != 0:
+                    num_images += 1
+                    label_types_arr = record.label_types.split(",")
+                    num_instances += len(label_types_arr)
                 label_json_path = record.label_json_path
                 if label_json_path is None or len(label_json_path) == 0 or not os.path.exists(label_json_path):
                     logger.warn(
                         f"当前[{record.id}]json文件记录为空 或 json文件不存在. path={label_json_path}, label_ms={record.label_time_ms}")
                     continue
                 shapes = read_shapes(label_json_path)
-                num_images += 1
                 if shapes is None or len(shapes) == 0:
                     logger.warn(f"当前[{record.id}]json文件读取异常，shapes为空. path={label_json_path}")
                     continue
                 # last_min_id = record.id + 1
-                num_instances += len(shapes)
                 # 获取shapes数组中的每个label，并对其计数。number_of_instances_per_category根据每个label确定计数，number_of_images_per_category跟图片计数
                 shape_label_set = []
-                for shape in shapes:
-                    label = shape['label']
+                shape_labels = label_types_arr + [shape['label'] for shape in shapes]
+                for label in shape_labels:
                     # 对每个实例都计数
                     if label not in number_of_instances_per_category:
                         number_of_instances_per_category[label] = 0

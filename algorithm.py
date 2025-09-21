@@ -36,9 +36,9 @@ def cleanup_similar_images(folder, start_time, end_time, cutoff=15):
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
         logger.info(
-            f"execute algo_006_build_pseudo_IS_dataset.find_similar_images_enhanced. folder={folder}, start_time={start_time}, end_time={end_time}, cutoff={cutoff}")
-        from algo_006_build_pseudo_IS_dataset import find_similar_images_enhanced
-        deleted_images = find_similar_images_enhanced(folder, start_time=start_time, end_time=end_time, cutoff=cutoff)
+            f"execute algo_006_build_pseudo_IS_dataset.find_similar_images_mix. folder={folder}, start_time={start_time}, end_time={end_time}, cutoff={cutoff}")
+        from algo_006_build_pseudo_IS_dataset import find_similar_images_mix
+        deleted_images = find_similar_images_mix(folder, start_time=start_time, end_time=end_time, cutoff=cutoff)
         return True, deleted_images
     except Exception as e:
         logger.exception(f"Error occurred executing algo_006_build_pseudo_IS_dataset.calling find_similar_images. folder={folder}")
@@ -48,7 +48,7 @@ def cleanup_similar_images(folder, start_time, end_time, cutoff=15):
         os.chdir(original_cwd)
 
 
-def general_annotation(image_path):
+def general_annotation(image_path, throw_ex=False):
     # 保存当前工作目录
     original_cwd = os.getcwd()
     try:
@@ -61,6 +61,8 @@ def general_annotation(image_path):
     except Exception as e:
         logger.exception(
             f"Error occurred executing algo_006_build_pseudo_IS_dataset.calling generate_annotation. image_path={image_path}")
+        if throw_ex:
+            raise e
         return None
     finally:
         # 切换回原始目录
@@ -113,3 +115,5 @@ def recognize_image_with_label(image_path, output_path, num_class=2):
 # 识别算法（不打标）：输入1张图片（base64）
 def recognize_image_without_label(image_base64) -> str:
     return image_base64
+# if __name__ == '__main__':
+

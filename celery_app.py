@@ -258,8 +258,9 @@ def perform_recognition(cl, pathway_id):
                             logger.info("# 识别图像（带label）")
                             label_images = os.path.join(storage_folder, "label_images")
                             tag_image, tag_json = recognize_image_with_label(image_path, output_path=label_images)
-                        shapes = read_shapes(tag_json)
-                        collector['label'] = {'labelImagePath': tag_image, 'shapes': shapes,
+                        if tag_json is not None:
+                            shapes = read_shapes(tag_json)
+                            collector['label'] = {'labelImagePath': tag_image, 'shapes': shapes,
                                               'labelJsonPath': tag_json,
                                               'timestamp': int(time.time() * 1000)}
                     except Exception as e:
