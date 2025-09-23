@@ -15,6 +15,8 @@ from algorithm import general_annotation
 from capture import FrameReadConfig, CameraRtspCapture
 from common.entity import Response
 from setup import setup_logging
+from concurrent.futures import ProcessPoolExecutor  # 添加进程池导入
+
 
 router = APIRouter(prefix="/algo")
 
@@ -22,7 +24,7 @@ RECO_TEMP_DIR = os.getenv("RECO_TEMP_DIR", '')
 ALGO_CLASS_FILE = os.getenv("ALGO_CLASS_FILE", '')
 os.makedirs(RECO_TEMP_DIR, exist_ok=True)
 
-logger = setup_logging("algo_server", log_file='log_server.log')
+logger = setup_logging("algo_server", log_file='algo_server.log')
 
 
 
@@ -45,16 +47,22 @@ async def process_file(file: UploadFile, file_id: str = None):
 
         # 调用算法（使用线程池避免阻塞事件循环）
         loop = asyncio.get_event_loop()
-        # 修改算法调用部分
-        ret = await loop.run_in_executor(None, general_annotation, saved_path, True)
-
+        start_time = int(time.time() * 1000)
+        # with ProcessPoolExecutor() as executor:
+            # 修改算法调用部分
+            # ret = await loop.run_in_executor(executor, general_annotation, saved_path, True)
+        # ret = await loop.run_in_executor(None, general_annotation, saved_path, True)
+        ret = general_annotation(saved_path, True)
+        end_time = int(time.time() * 1000)
+        logger.info(f"execute algo reco {end_time - start_time} ms")
+        # ret = await loop.run_in_executor(None, general_annotation, saved_path, True)
         if ret is None:
             return {"id": file_id, "error": "算法处理失败"}
 
         tag_image, tag_json = ret[0], ret[1]
         metrics_map = {}
         points = []
-        if tag_json is None or os.path.exists(tag_json):
+        if tag_json is None or os.path.exists(tag_json) is False:
             raise Exception("算法识别json结果文件异常")
         # 使用 with 语句打开文件
         with open(tag_json, 'r', encoding='utf-8') as file:

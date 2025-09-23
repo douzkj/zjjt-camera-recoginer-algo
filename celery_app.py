@@ -252,6 +252,7 @@ def perform_recognition(cl, pathway_id):
                         if pathway.is_general():
                             # general_test_copied_filepath =  os.path.join(STORAGE_GENERAL_BACKUP_FOLDER, os.path.basename(image_path))
                             ret = general_annotation(image_path)
+                            logger.info(f"general_annotation ret is {ret}")
                             if ret is not None:
                                 tag_image, tag_json = ret[0], ret[1]
                         else:

@@ -9,11 +9,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-
+from algorithm import load_predictors,load_predictor
 from celery_app import celery_app
 from db import Session, Signal
 from services import rtsp, task, algo
-
+from setup import setup_logging
+logger = setup_logging('app', log_file='app.log')
 # 在Flask启动前设置
 
 load_dotenv()  # 加载环境变量
@@ -22,7 +23,9 @@ SERVER_PORT = int(os.getenv('SERVER_PORT', 9001))
 
 pathway_intervals = {}
 interval = 5
-
+# PREDICTORS = load_predictor()
+PREDICTORS = None
+logger.info(f"predictor loaded successfully. predictors = {PREDICTORS}")
 
 def pathway_listener():
     while True:
