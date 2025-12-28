@@ -504,9 +504,6 @@ def test_result(r):
 
 
 if __name__ == '__main__':
-    r1 = test_result(1)
+    r1, fm = read_rtsp_frame("rtsp://video.hibuilding.cn:554/openUrl/sEIo0Jq")
     print(r1)
-    r3=test_result(2)
-    print(r3)
-    # dtg = get_frame_date_format()
-    # print(dtg)
+

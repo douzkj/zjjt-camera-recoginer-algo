@@ -5,6 +5,7 @@
 # 识别算法（不打标）：输入1张图片（base64）
 import os
 import sys
+import time
 
 from dotenv import load_dotenv
 
@@ -21,6 +22,8 @@ ALGO_WEIGHT_PATH = os.getenv("ALGO_LABEL_WEIGHT_PATH", "weights")
 sys.path.append(ALGO_DIR)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import logging
+
+PREDICTORS = None
 
 
 # 计算两张图片的相似度
@@ -87,13 +90,17 @@ def load_predictors():
         os.chdir(original_cwd)
 
 
-# PREDICTOR = load_predictor()
+def setup_predictors():
+    global PREDICTORS
+    PREDICTORS = load_predictors()
 
 
 def general_annotation(image_path, throw_ex=False):
-    from app import PREDICTORS
+    # from app import PREDICTORS
+    global PREDICTORS
     # 保存当前工作目录
     original_cwd = os.getcwd()
+    start_time = int(time.time() * 1000)
     try:
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
@@ -112,6 +119,8 @@ def general_annotation(image_path, throw_ex=False):
     finally:
         # 切换回原始目录
         os.chdir(original_cwd)
+        end_time = int(time.time() * 1000)
+        logger.info(f"[{image_path}]general_annotation done. cost= {end_time - start_time} ms")
 
 
 # 增强算法：输入输出都是图片（base64）
