@@ -21,6 +21,7 @@ from entity import SignalConfig
 from mq import MQSender
 from recognizer import read_shapes
 from setup import setup_logging
+from algorithm import setup_predictors, clear_predictors
 
 load_dotenv()  # 加载环境变量
 
@@ -60,6 +61,8 @@ logger = setup_logging("recognizer")
 
 existing_tasks = {}
 import heapq
+
+
 class RtspBlackManager:
     def __init__(self):
         self._store = {}
@@ -114,7 +117,9 @@ class RtspBlackManager:
             self._store[rtsp_url] = expired_time
             heapq.heappush(self._heap, (expired_time, rtsp_url))
 
+
 black_manager = RtspBlackManager()
+
 
 def des_signal_config(config: str):
     if config is None or len(config) == 0:
@@ -151,11 +156,11 @@ class PathwayConcurrencyControl:
         if lock_file.exists():
             lock_file.unlink()
 
+
 pathway_control = PathwayConcurrencyControl()
 
 
 def pathway_concurrency_limit(func):
-
     global pathway_control
     """并发控制装饰器"""
 
@@ -179,6 +184,36 @@ def pathway_concurrency_limit(func):
 
     return wrapper
 
+
+class PathwayState:
+    pathway = None
+
+    def get_state(self):
+        return self.pathway.status == 1 if self.valid() else False
+
+    def valid(self):
+        return self.pathway is not None
+
+
+pathway_state: PathwayState = PathwayState()
+
+
+def pathway_station(pathway_id):
+    global pathway_state
+    while True:
+        session = Session()
+        try:
+            logger.info(f"refresh pathway state. pathway_id={pathway_id}")
+            pathway = session.query(Signal).get(pathway_id)
+            pathway_state.pathway = pathway
+        finally:
+            session.close()
+            time.sleep(5)
+
+
+pathway_state_thread = None
+
+
 @celery_app.task(
     name='celery_app.perform_recognition',  # 确保模块路径正确
     bind=True,
@@ -187,22 +222,37 @@ def pathway_concurrency_limit(func):
     # raise_on_duplicate=True  # 重复任务直接抛出异常
 )
 def perform_recognition(cl, pathway_id):
-    global black_manager
+    global black_manager, pathway_state_thread, pathway_state
     session = Session()
     try:
-        pathway = session.query(Signal).get(pathway_id)
+        # pathway = session.query(Signal).get(pathway_id)
+        # if not pathway:
+        #     logger.warning(f"未找到通路 ID 为 {pathway_id} 的记录")
+        #     return
+
+        # if pathway.status != 1:
+        #     logger.info(f"通路 {pathway_id} 采集状态非活跃，跳过识别任务")
+        #     clear_predictors()
+        #     return
+        # setup_predictors()
+        if pathway_state_thread is None:
+            pathway_state_thread = threading.Thread(target=pathway_station, args=(pathway_id,), daemon=True)
+            pathway_state_thread.start()
+        pathway = pathway_state.pathway
         if not pathway:
             logger.warning(f"未找到通路 ID 为 {pathway_id} 的记录")
             return
 
         if pathway.status != 1:
             logger.info(f"通路 {pathway_id} 采集状态非活跃，跳过识别任务")
+            clear_predictors()
             return
+        setup_predictors()
         collect_sender = MQSender(amqp_url, QUEUE_RECOGNIZER_COLLECTION)
         signal_config = des_signal_config(pathway.config)
         frame_config = signal_config.frame
         frame_storage_config = FrameStorageConfig(store_folder=frame_config.storage.frameStoragePath,
-                                            image_suffix=frame_config.storage.frameImageSuffix)
+                                                  image_suffix=frame_config.storage.frameImageSuffix)
         frame_read_config = FrameReadConfig(frame_interval_seconds=frame_config.read.frameIntervalSeconds,
                                             frame_retry_times=frame_config.read.frameRetryTimes,
                                             frame_retry_interval=frame_config.read.frameRetryInterval,
@@ -214,22 +264,28 @@ def perform_recognition(cl, pathway_id):
         for camera in cameras:
             try:
                 if camera.is_rtsp_expired():
-                    logger.warning(f"[{task_id}][{camera.index_code} - {camera.name}] RTSP地址已过期: {camera.latest_rtsp_url}")
+                    logger.warning(
+                        f"[{task_id}][{camera.index_code} - {camera.name}] RTSP地址已过期: {camera.latest_rtsp_url}")
                     continue
                 if black_manager.check(camera.latest_rtsp_url):
-                    logger.warning(f"[{task_id}][{camera.index_code} - {camera.name}] 存在黑名单中. RTSP访问: {camera.latest_rtsp_url}")
+                    logger.warning(
+                        f"[{task_id}][{camera.index_code} - {camera.name}] 存在黑名单中. RTSP访问: {camera.latest_rtsp_url}")
                     continue
-                pathway = session.query(Signal).get(pathway_id)
+                # pathway = session.query(Signal).get(pathway_id)
+                pathway = pathway_state.pathway
                 if not pathway:
                     logger.warning(f"未找到通路 ID 为 {pathway_id} 的记录")
                     continue
 
                 if pathway.status != 1:
                     logger.info(f"通路 {pathway_id} 采集状态非活跃，跳过识别任务")
+                    clear_predictors()
                     continue
+                setup_predictors()
                 storage_folder = frame_storage_config.get_storage_folder()
                 ts = int(time.time() * 1000)
-                image_path = os.path.join(storage_folder, f"{pathway.id}-{get_frame_date_format(ts=ts)}-{camera.index_code}.{frame_storage_config.image_suffix}")
+                image_path = os.path.join(storage_folder,
+                                          f"{pathway.id}-{get_frame_date_format(ts=ts)}-{camera.index_code}.{frame_storage_config.image_suffix}")
                 # 读取frame
                 ret, frame = read_rtsp_frame(camera.latest_rtsp_url)
                 if ret is False:
@@ -262,8 +318,8 @@ def perform_recognition(cl, pathway_id):
                         if tag_json is not None:
                             shapes = read_shapes(tag_json)
                             collector['label'] = {'labelImagePath': tag_image, 'shapes': shapes,
-                                              'labelJsonPath': tag_json,
-                                              'timestamp': int(time.time() * 1000)}
+                                                  'labelJsonPath': tag_json,
+                                                  'timestamp': int(time.time() * 1000)}
                     except Exception as e:
                         logger.exception("recognize_image_with_label error")
                 # ret, collection = read_and_recognize(rtsp_url=camera.latest_rtsp_url,
@@ -280,7 +336,8 @@ def perform_recognition(cl, pathway_id):
                     "collect": collector,
                     "timestamp": int(time.time() * 1000),
                 }
-                logger.info(f"send collect message: {json.dumps(message)}")
+                logger.info(
+                    f"send collect message. camera={camera.index_code}, task_id={task_id}, timestamp={message['timestamp']}")
                 asyncio.run(collect_sender.send_message(message))
             except Exception as e:
                 logger.exception(f"执行[{camera.index_code} - {camera.name}]识别任务时出错: {e}")
@@ -289,12 +346,14 @@ def perform_recognition(cl, pathway_id):
     finally:
         session.close()
 
+
 def get_frame_date_format(format='%Y%m%d%H%M%S', ts=None):
     import datetime, pytz
     # 将时间戳转换为datetime对象
     dt_object = datetime.datetime.fromtimestamp(int(time.time()) if ts is None else int(ts / 1000))
     dt_object = dt_object.astimezone(pytz.timezone('Asia/Shanghai'))
     return dt_object.strftime(format)
+
 
 def read_frame(rtsp_url):
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
@@ -334,6 +393,7 @@ def read_rtsp_frame(rtsp_url):
         return False, None
     return True, frame
 
+
 def read_and_recognize(rtsp_url, storage_folder, image_path, algo_label_opened=False, ts=None, is_general=False):
     collector = {}
     try:
@@ -355,11 +415,10 @@ def read_and_recognize(rtsp_url, storage_folder, image_path, algo_label_opened=F
             tag_image, tag_json = recognize_image_with_label(image_path, output_path=label_images)
             shapes = read_shapes(tag_json)
             collector['label'] = {'labelImagePath': tag_image, 'shapes': shapes, 'labelJsonPath': tag_json,
-                                   'timestamp': int(time.time() * 1000)}
+                                  'timestamp': int(time.time() * 1000)}
         except Exception as e:
             logger.exception("recognize_image_with_label error")
     return True, collector
-
 
 
 class TaskScheduler:
@@ -415,7 +474,9 @@ class TaskScheduler:
             finally:
                 session.close()
 
+
 scheduler = TaskScheduler()
+
 
 # 配置定时任务
 @celery_app.on_after_finalize.connect
@@ -433,6 +494,7 @@ def refresh_pathway_tasks():
     global scheduler
     logger.info("refresh_pathway_tasks")
     scheduler.refresh_tasks()
+
 
 # @beat_init.connect
 # def init_scheduler(**kwargs):
@@ -504,6 +566,5 @@ def test_result(r):
 
 
 if __name__ == '__main__':
-    r1, fm = read_rtsp_frame("rtsp://video.hibuilding.cn:554/openUrl/sEIo0Jq")
+    r1, fm = read_rtsp_frame("rtsp://video.hibuilding.cn:554/openUrl/LSSpKG4")
     print(r1)
-

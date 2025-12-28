@@ -5,7 +5,6 @@
 # 识别算法（不打标）：输入1张图片（base64）
 import os
 import sys
-import time
 
 from dotenv import load_dotenv
 
@@ -79,7 +78,7 @@ def load_predictors():
         os.chdir(ALGO_DIR)
         logger.debug(
             f"execute algo_006_build_pseudo_IS_dataset.load_predictor. ")
-        from algo_006_1_build_IS_dataset import load_predictors
+        from algo_006_1_build_dataset import load_predictors
         return load_predictors()
     except Exception as e:
         logger.exception(
@@ -90,9 +89,19 @@ def load_predictors():
         os.chdir(original_cwd)
 
 
-def setup_predictors():
+def setup_predictors(re_init=False):
     global PREDICTORS
-    PREDICTORS = load_predictors()
+    if re_init or PREDICTORS is None:
+        PREDICTORS = load_predictors()
+
+
+def clear_predictors():
+    global PREDICTORS
+    if PREDICTORS is not None:
+        import torch, gc
+        PREDICTORS = None
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def general_annotation(image_path, throw_ex=False):
@@ -100,14 +109,13 @@ def general_annotation(image_path, throw_ex=False):
     global PREDICTORS
     # 保存当前工作目录
     original_cwd = os.getcwd()
-    start_time = int(time.time() * 1000)
     try:
         # 切换到 algo 目录
         os.chdir(ALGO_DIR)
         logger.debug(
             f"execute algo_006_build_pseudo_IS_dataset.generate_annotation. PREDICTOR={PREDICTORS}")
         # from algo_006_0_build_IS_dataset import generate_annotation
-        from algo_006_1_build_IS_dataset import dataset_generator
+        from algo_006_1_build_dataset import dataset_generator
         return dataset_generator(image_path, 0, PREDICTORS)
         # return generate_annotation(image_path, PREDICTORS)
     except Exception as e:
@@ -119,8 +127,6 @@ def general_annotation(image_path, throw_ex=False):
     finally:
         # 切换回原始目录
         os.chdir(original_cwd)
-        end_time = int(time.time() * 1000)
-        logger.info(f"[{image_path}]general_annotation done. cost= {end_time - start_time} ms")
 
 
 # 增强算法：输入输出都是图片（base64）
