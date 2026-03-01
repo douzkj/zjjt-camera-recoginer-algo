@@ -15,7 +15,6 @@ from pydantic import BaseModel
 import aiofiles
 
 from algorithm import general_annotation
-from capture import FrameReadConfig, CameraRtspCapture
 from common.entity import Response
 from setup import setup_logging
 from concurrent.futures import ProcessPoolExecutor  # 添加进程池导入
@@ -173,22 +172,6 @@ async def reco(file: UploadFile = File(...)):
     return Response.ok(ret)
 
 
-
-async def write_to_tmp(file: UploadFile, file_id:str):
-    if file_id is None:
-        file_id = str(uuid.uuid4())
-    logger.info(f"[fileid: {file_id}]starting reco file. size={round(file.size / (1024 * 1024), 2)} mb")
-    # 生成唯一文件名（结合ID和时间戳）
-    filename = f"{file_id}_{int(time.time())}{os.path.splitext(file.filename)[-1]}"
-    saved_path = os.path.join(RECO_TEMP_DIR, filename)
-
-    # 写入文件
-    contents = await file.read()
-    with open(saved_path, "wb") as f:
-        f.write(contents)
-
-    logger.info(f"[fileid: {file_id}]saved file to tmp. {saved_path}")
-    return {"id": file_id, "image_path":saved_path}
 
 @router.post("/reco/batch")
 async def reco_batch(ids: List[str] = Form(..., description="图片文件ID列表"), files: List[UploadFile] = File(...)):
